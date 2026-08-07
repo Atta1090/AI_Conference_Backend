@@ -1,0 +1,11 @@
+TRANSCRIPT:
+Ahmed: We need to finish the project report by Friday.
+Sara: I will handle the design section.
+John: I can review the budget numbers tonight.
+Ahmed: Great. Let's meet again on Monday at 10 AM.
+
+QUESTION:
+Who will handle the design section?
+
+EXPECTED:
+Sara will handle the design section.

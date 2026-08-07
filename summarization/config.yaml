@@ -1,0 +1,44 @@
+# ConvoBridge Module 2 — Meeting Summarization (Gemma 3)
+# Used by scripts under summarization/ and optional env overrides.
+
+project: convobridge-summarization
+
+# Base model for fine-tuning (Google Colab + GPU recommended).
+base_model: google/gemma-3-4b-it
+
+# Smaller model for local inference on 8–16 GB RAM (quantized in production).
+inference_model: google/gemma-3-1b-it
+
+# Path to LoRA adapter after Colab training (relative to repo root).
+adapter_path: summarization/models/gemma3-meeting-lora
+
+# Training datasets (Hugging Face dataset IDs).
+datasets:
+  warmup: knkarthick/samsum          # dialogue summarization warm-up
+  meeting: knkarthick/QMSum          # meeting + query-summary (if unavailable, use GitHub clone)
+  # Domain datasets (manual download):
+  # AMI: https://groups.inf.ed.ac.uk/ami/download/
+  # QMSum GitHub: https://github.com/Yale-LILY/QMSum
+
+training:
+  method: qlora
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 2.0e-4
+  num_epochs: 2
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 4
+  max_seq_length: 2048
+  save_steps: 200
+
+inference:
+  max_input_tokens: 4096
+  max_new_tokens: 1024
+  temperature: 0.3
+  top_p: 0.9
+
+output_format:
+  summary_key: SUMMARY
+  key_points_key: KEY_POINTS
+  action_items_key: ACTION_ITEMS

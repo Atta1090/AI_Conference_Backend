@@ -1,0 +1,16 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+
+# ML stack (you may pin/adjust in Colab)
+torch
+transformers
+sentencepiece
+accelerate
+
+# Whisper (open-source)
+openai-whisper
+
+# Coqui TTS
+TTS
+

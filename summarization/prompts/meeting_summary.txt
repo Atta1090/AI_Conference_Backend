@@ -1,0 +1,21 @@
+Summarize the meeting transcript below.
+
+Reply in exactly this layout (fill in real content, never copy these instructions):
+
+SUMMARY:
+Two to four sentences describing what was discussed and decided.
+
+KEY_POINTS:
+- one short point per line
+
+ACTION_ITEMS:
+- Owner: task (due: date or TBD)
+
+Rules:
+- Use only information from the transcript.
+- If there are no tasks, write "- None" under ACTION_ITEMS.
+- Do not invent names or deadlines that are not in the transcript.
+- Start your reply with the word SUMMARY: on its own line.
+
+TRANSCRIPT:
+{transcript}

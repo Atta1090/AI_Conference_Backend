@@ -1,0 +1,33 @@
+# ConvoBridge Chatbot — Qwen2.5-0.5B-Instruct (lighter than Gemma)
+# Separate from chatbot/config.yaml — does not change the current Gemma path.
+
+project: convobridge-chatbot-qwen05
+
+base_model: Qwen/Qwen2.5-0.5B-Instruct
+inference_model: Qwen/Qwen2.5-0.5B-Instruct
+
+adapter_path: chatbot/models/qwen25-05b-chatbot-lora
+
+datasets:
+  dialogue: knkarthick/samsum
+  squad: rajpurkar/squad
+
+training:
+  method: lora   # full precision LoRA; use qlora if GPU VRAM is tight
+  use_qlora: false
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 2.0e-4
+  num_epochs: 2
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2
+  max_seq_length: 1024
+  save_steps: 100
+  max_train_rows: 6000
+  gradient_checkpointing: true
+
+inference:
+  max_new_tokens: 256
+  temperature: 0.2
+  top_p: 0.9

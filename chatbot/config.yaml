@@ -1,0 +1,37 @@
+# ConvoBridge Module 2 — Meeting Transcript Q&A Chatbot (Gemma 3)
+
+project: convobridge-chatbot
+
+base_model: google/gemma-3-1b-it
+inference_model: google/gemma-3-1b-it
+
+adapter_path: chatbot/models/gemma3-chatbot-lora
+
+datasets:
+  dialogue: knkarthick/samsum
+  # Optional extractive QA grounding (loaded online in Colab):
+  # squad: rajpurkar/squad
+
+training:
+  method: qlora
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 2.0e-4
+  num_epochs: 1
+  per_device_batch_size: 8
+  gradient_accumulation_steps: 2
+  max_seq_length: 1024
+  packing: false
+  auto_find_batch_size: false
+  save_steps: 50
+  max_train_rows: 2500
+  # FAST Colab profile — avoid auto_find_batch_size (very slow)
+  gradient_checkpointing: true
+  optimizer: adamw_torch
+
+inference:
+  max_input_tokens: 4096
+  max_new_tokens: 256
+  temperature: 0.2
+  top_p: 0.9

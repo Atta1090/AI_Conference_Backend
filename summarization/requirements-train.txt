@@ -1,0 +1,9 @@
+# Install on Google Colab only (GPU runtime required).
+transformers>=4.44,<5.0
+peft>=0.13.0
+bitsandbytes>=0.44.0
+datasets>=3.0.0
+accelerate>=1.0.0
+trl>=0.12.0
+pyyaml>=6.0.0
+sentencepiece>=0.2.0

@@ -1,0 +1,63 @@
+rules_version = '2';
+
+// ConvoBridge Firestore rules.
+//
+// The live translation feature stores each recognized sentence in an
+// `utterances` subcollection under the meeting or call it belongs to:
+//
+//     meetings/{meetingId}/utterances/{utteranceId}
+//     calls/{callId}/utterances/{utteranceId}
+//
+// Rules do NOT cascade to subcollections in Firestore: a rule written only
+// for `match /meetings/{id}` leaves the `utterances` documents unreachable,
+// and the symptom is captions and translated audio silently never arriving
+// on the other phone. The nested matches below are what make it work.
+//
+// Deploy with:  firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Profile documents, including each user's default language.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Meetings: any signed-in participant may read the room, update the
+    // participant/language maps, and post what they said.
+    match /meetings/{meetingId} {
+      allow read, create, update: if signedIn();
+      allow delete: if false;
+
+      match /utterances/{utteranceId} {
+        allow read: if signedIn();
+        // You may only publish speech under your own uid.
+        allow create: if signedIn()
+                      && request.resource.data.speakerUid == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+
+    // 1:1 calls use the same utterance bus.
+    match /calls/{callId} {
+      allow read, create, update: if signedIn();
+      allow delete: if false;
+
+      match /utterances/{utteranceId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+                      && request.resource.data.speakerUid == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+
+    // Per-participant transcript history used by the History screen.
+    match /sessions/{sessionId} {
+      allow read, write: if signedIn();
+    }
+  }
+}

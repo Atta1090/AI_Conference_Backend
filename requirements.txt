@@ -1,0 +1,66 @@
+# ---- Core web framework (installed) ----
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.1
+av==17.1.0
+certifi==2026.6.17
+click==8.4.2
+colorama==0.4.6
+ctranslate2==4.8.0
+fastapi==0.138.2
+faster-whisper==1.2.1
+filelock==3.29.4
+flatbuffers==25.12.19
+fsspec==2026.6.0
+h11==0.16.0
+hf-xet==1.5.1
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.21.0
+idna==3.18
+markdown-it-py==4.2.0
+mdurl==0.1.2
+numpy==2.4.6
+onnxruntime==1.27.0
+packaging==26.2
+protobuf==7.35.1
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+python-multipart==0.0.32
+PyYAML==6.0.3
+rich==15.0.0
+shellingham==1.5.4
+starlette==1.3.1
+tokenizers==0.23.1
+tqdm==4.68.3
+typer==0.25.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+uvicorn==0.49.0
+# Enables --reload-exclude / WatchFilesReload (StatReload ignores excludes)
+watchfiles>=0.21
+
+# ---- Meeting audio pipeline: added modules ----
+# Audio I/O + resampling
+librosa>=0.10.2
+soundfile>=0.12.1
+# Noise reduction (RNNoise-style spectral gating)
+noisereduce>=3.0.0
+# Translation (Helsinki Opus-MT pairs) + Text-to-Speech (Coqui XTTS v2)
+torch>=2.2.0
+torchaudio>=2.2.0
+# coqui-tts is incompatible with transformers 5.x, so pin to 4.x
+transformers>=4.44,<5.0
+sentencepiece>=0.2.0
+sacremoses>=0.1.1
+# [codec] pulls torchcodec, required for audio IO with torch>=2.9
+coqui-tts[codec]>=0.24.1
+
+# Module 2: summarization (Gemma 3 + optional LoRA adapter)
+peft>=0.13.0
+accelerate>=0.33.0
+# CUDA 4-bit NF4 for Gemma (ignored on CPU-only Torch builds)
+bitsandbytes>=0.43.0
+datasets>=3.0.0
+pyyaml>=6.0.0

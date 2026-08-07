@@ -1,0 +1,40 @@
+# Virtual Environment
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment Variables
+.env
+
+# VS Code
+.vscode/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local AI model weights / caches (large, re-downloadable via download_opus_models.py)
+models/
+!models/.gitkeep
+
+# Runtime-generated audio (TTS output served from /media)
+uploads/
+
+# Training datasets / fine-tuned adapters (large, project-specific)
+datasets/
+chatbot/models/
+summarization/models/
+
+# Android/Flutter local SDK path + build output (machine-specific)
+front_end/android/local.properties
+front_end/**/build/
+front_end/.dart_tool/
+
+# Misc local scratch files
+model_test.txt

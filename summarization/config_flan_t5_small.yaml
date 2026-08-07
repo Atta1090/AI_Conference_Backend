@@ -1,0 +1,34 @@
+# ConvoBridge Module 2 — Meeting Summarization (FLAN-T5-small, lighter)
+# Separate from Gemma config.yaml — does not change the current Gemma path.
+
+project: convobridge-summarization-flan-t5-small
+
+base_model: google/flan-t5-small
+inference_model: google/flan-t5-small
+
+# Full fine-tune or LoRA output folder (relative to repo root).
+adapter_path: summarization/models/flan-t5-small-meeting
+
+datasets:
+  # Reuses the same processed JSONL as Gemma training.
+  train_jsonl: summarization/data/processed/train_meeting_summary.jsonl
+
+training:
+  method: lora_seq2seq   # LoRA on encoder-decoder
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 3.0e-4
+  num_epochs: 3
+  per_device_batch_size: 8
+  gradient_accumulation_steps: 2
+  max_source_length: 512
+  max_target_length: 256
+  save_steps: 200
+  max_train_rows: 8000
+  # Set true for full fine-tune instead of LoRA (still light for T5-small).
+  full_finetune: false
+
+inference:
+  max_new_tokens: 256
+  num_beams: 4

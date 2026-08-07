@@ -1,0 +1,7 @@
+Host: Good morning everyone. Today we will finalize the mobile app UI and backend API integration.
+Participant A: I completed the login and signup screens in Flutter.
+Participant B: Backend STT and translation endpoints are ready for testing.
+Host: Great. For next week, A will connect the meeting screen to the pipeline API.
+Host: B will prepare deployment on a 16GB server with Docker.
+Participant C: I will write test cases for speech-to-text and translation modules.
+Host: Meeting closed. We target demo on Friday.
