@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../app_config.dart';
+import '../../services/ai_client.dart';
 import '../../services/calls_repo.dart';
 import '../../services/device_tts.dart';
 import '../../services/meeting_ai_session.dart';
@@ -62,6 +63,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   // ── AI captions ───────────────────────────────────────────────────────
   /// The language I chose: I speak it and I hear the other side in it.
   String _myLang = 'en';
+  bool _langSeeded = false;
+  bool _langSheetShown = false;
+  bool? _aiReachable;
 
   /// My own recognized speech.
   String _lastTranscript = '';
@@ -73,7 +77,6 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   bool _aiBusy = false;
   bool _translatedVoicePlaying = false;
   String _aiPhase = 'idle'; // listening | processing | speaking | idle
-
 
   // ── Names ─────────────────────────────────────────────────────────────
   String? _callerName;
@@ -133,8 +136,117 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     if (mounted) setState(() {});
     if (speaking) {
       unawaited(_aiSession.pauseCapture());
-    } else {
+    } else if (_micOn) {
+      // Do not resume STT while the user has muted the mic.
       unawaited(_aiSession.resumeCapture());
+    }
+  }
+
+  /// Seed language once from the call doc — never overwrite mid-call picks.
+  void _seedLangFromCall(CallDoc call, bool isCaller) {
+    if (_langSeeded) return;
+    _langSeeded = true;
+    _myLang = isCaller ? call.callerLang : call.calleeLang;
+  }
+
+  Future<void> _setMyLang(String lang) async {
+    if (lang == _myLang) return;
+    setState(() {
+      _myLang = lang;
+      _lastTranslation = '';
+      _incomingSpeaker = '';
+    });
+    _aiSession.setMyLanguage(lang);
+    _bus.setMyLanguage(lang);
+    await _deviceTts.stop();
+    unawaited(_room.setMyLanguage(lang));
+    unawaited(_callsRepo.updateMyLanguage(widget.callId, lang));
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      unawaited(FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .set({'defaultLang': lang}, SetOptions(merge: true)));
+    }
+  }
+
+  Future<void> _promptForLanguage() async {
+    if (!mounted) return;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1B1D),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
+              child: Text(
+                'Choose your language',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 14),
+              child: Text(
+                'You will speak in this language, and hear the other person '
+                'translated into it — captions and voice.',
+                style: TextStyle(color: Colors.white60, fontSize: 13),
+              ),
+            ),
+            ...LangCodes.nameToCode.entries.map(
+              (e) => ListTile(
+                leading: Icon(
+                  _myLang == e.value
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  color: _myLang == e.value
+                      ? const Color(0xFF39A935)
+                      : Colors.white38,
+                ),
+                title: Text(
+                  e.key,
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                ),
+                onTap: () => Navigator.of(ctx).pop(e.value),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null) await _setMyLang(picked);
+  }
+
+  Future<void> _probeAiServer() async {
+    try {
+      await AiClient().health().timeout(const Duration(seconds: 4));
+      if (!mounted) return;
+      setState(() => _aiReachable = true);
+    } catch (e) {
+      debugPrint('AI health failed (${AppConfig.aiServerBaseUrl}): $e');
+      if (!mounted) return;
+      setState(() => _aiReachable = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'AI server unreachable at ${AppConfig.aiServerBaseUrl}. '
+            'Restart backend with python run_dev.py (0.0.0.0) and ensure '
+            'phone + PC are on the same Wi‑Fi.',
+          ),
+          duration: const Duration(seconds: 8),
+          backgroundColor: Colors.red.shade800,
+        ),
+      );
     }
   }
 
@@ -293,15 +405,23 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   Future<void> _startAi() async {
+    await _probeAiServer();
+
     _bus.start(myLang: _myLang);
     await _muteOriginalRemoteAudio();
     unawaited(_room.setMyLanguage(_myLang));
-    if (_aiSession.isRunning) return;
-    _aiSession.setMyLanguage(_myLang);
-    await _aiSession.start(
-      srcLang: _myLang,
-      callId: widget.callId,
-    );
+    if (!_aiSession.isRunning) {
+      _aiSession.setMyLanguage(_myLang);
+      await _aiSession.start(
+        srcLang: _myLang,
+        callId: widget.callId,
+      );
+    }
+
+    if (mounted && !_langSheetShown) {
+      _langSheetShown = true;
+      await _promptForLanguage();
+    }
   }
 
   Future<void> _tryReconnect() async {
@@ -332,6 +452,12 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   Future<void> _toggleMic() async {
     _micOn = !_micOn;
     await _engine?.muteLocalAudioStream(!_micOn);
+    // Mute must also stop STT publish, otherwise the other side still hears us.
+    if (_micOn) {
+      if (!_translatedVoicePlaying) unawaited(_aiSession.resumeCapture());
+    } else {
+      unawaited(_aiSession.pauseCapture());
+    }
     setState(() {});
   }
 
@@ -490,9 +616,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
             .addPostFrameCallback((_) => _ensureNamesLoaded(call));
 
         final isCaller = call.callerUid == myUid;
-        _myLang = isCaller ? call.callerLang : call.calleeLang;
-        _aiSession.setMyLanguage(_myLang);
-        _bus.setMyLanguage(_myLang);
+        _seedLangFromCall(call, isCaller);
         final otherName = isCaller
             ? (_calleeName ?? 'Receiver')
             : (_callerName ?? 'Caller');
@@ -602,6 +726,15 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                           ),
                         ),
                         // Flip camera — only when camera is on
+                        if (_aiReachable == false)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Icon(
+                              Icons.cloud_off,
+                              color: Colors.red.shade300,
+                              size: 20,
+                            ),
+                          ),
                         if (_joined && _cameraOn && !_sharingScreen)
                           _CircleIconButton(
                             icon: Icons.flip_camera_ios,
@@ -627,12 +760,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
                     isBusy: _aiBusy,
                     isSpeaking: _translatedVoicePlaying,
                     phase: _aiPhase,
-                    onMyLangChanged: (v) {
-                      setState(() => _myLang = v);
-                      _aiSession.setMyLanguage(v);
-                      _bus.setMyLanguage(v);
-                      unawaited(_room.setMyLanguage(v));
-                    },
+                    onMyLangChanged: _setMyLang,
                   ),
                 ),
               // ── Bottom controls ─────────────────────────────────────

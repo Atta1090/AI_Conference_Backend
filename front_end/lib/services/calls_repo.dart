@@ -71,4 +71,21 @@ class CallsRepo {
       SetOptions(merge: true),
     );
   }
+
+  /// Persist this user's in-call language so rebuilds / the other side stay in sync.
+  Future<void> updateMyLanguage(String callId, String lang) async {
+    final me = FirebaseAuth.instance.currentUser;
+    if (me == null || lang.trim().isEmpty) return;
+
+    final snap = await _db.collection('calls').doc(callId).get();
+    final data = snap.data();
+    if (data == null) return;
+
+    final isCaller = data['callerUid'] == me.uid;
+    final field = isCaller ? 'callerLang' : 'calleeLang';
+    await _db.collection('calls').doc(callId).set(
+      {field: lang},
+      SetOptions(merge: true),
+    );
+  }
 }

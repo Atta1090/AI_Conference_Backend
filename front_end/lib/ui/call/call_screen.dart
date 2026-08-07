@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 
 import '../../app_config.dart';
+import '../../services/ai_client.dart';
 import '../../services/calls_repo.dart';
 import '../../services/device_tts.dart';
 import '../../services/meeting_ai_session.dart';
@@ -57,6 +58,10 @@ class _CallScreenState extends State<CallScreen> {
   /// The other side's own choice — shown in the UI only.
   String _otherLang = 'en';
 
+  bool _langSeeded = false;
+  bool _langSheetShown = false;
+  bool? _aiReachable;
+  bool _micOn = true;
   bool _translatedVoicePlaying = false;
 
   // Display names (optional UI polish)
@@ -111,9 +116,134 @@ class _CallScreenState extends State<CallScreen> {
     if (mounted) setState(() {});
     if (speaking) {
       unawaited(_aiSession.pauseCapture());
-    } else {
+    } else if (_micOn) {
       unawaited(_aiSession.resumeCapture());
     }
+  }
+
+  void _seedLangFromCall(CallDoc call, bool isCaller) {
+    if (_langSeeded) return;
+    _langSeeded = true;
+    _myLang = isCaller ? call.callerLang : call.calleeLang;
+  }
+
+  Future<void> _setMyLang(String lang) async {
+    if (lang == _myLang) return;
+    setState(() {
+      _myLang = lang;
+      _lastTranslation = '';
+    });
+    _aiSession.setMyLanguage(lang);
+    _bus.setMyLanguage(lang);
+    await _deviceTts.stop();
+    unawaited(_room.setMyLanguage(lang));
+    unawaited(_callsRepo.updateMyLanguage(widget.callId, lang));
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      unawaited(FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .set({'defaultLang': lang}, SetOptions(merge: true)));
+    }
+  }
+
+  Future<void> _promptForLanguage() async {
+    if (!mounted) return;
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF1B1B1D),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
+              child: Text(
+                'Choose your language',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 14),
+              child: Text(
+                'You will speak in this language, and hear the other person '
+                'translated into it — captions and voice.',
+                style: TextStyle(color: Colors.white60, fontSize: 13),
+              ),
+            ),
+            ...LangCodes.nameToCode.entries.map(
+              (e) => ListTile(
+                leading: Icon(
+                  _myLang == e.value
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  color: _myLang == e.value
+                      ? const Color(0xFF39A935)
+                      : Colors.white38,
+                ),
+                title: Text(
+                  e.key,
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                ),
+                onTap: () => Navigator.of(ctx).pop(e.value),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked != null) await _setMyLang(picked);
+  }
+
+  Future<void> _probeAiServer() async {
+    try {
+      await AiClient().health().timeout(const Duration(seconds: 4));
+      if (!mounted) return;
+      setState(() => _aiReachable = true);
+    } catch (e) {
+      debugPrint('AI health failed (${AppConfig.aiServerBaseUrl}): $e');
+      if (!mounted) return;
+      setState(() => _aiReachable = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'AI server unreachable at ${AppConfig.aiServerBaseUrl}. '
+            'Restart backend with python run_dev.py (0.0.0.0) and ensure '
+            'phone + PC are on the same Wi‑Fi.',
+          ),
+          duration: const Duration(seconds: 8),
+          backgroundColor: Colors.red.shade800,
+        ),
+      );
+    }
+  }
+
+  Future<void> _muteOriginalRemoteAudio() async {
+    try {
+      await _engine?.muteAllRemoteAudioStreams(true);
+    } catch (e) {
+      debugPrint('CallScreen mute remote audio failed: $e');
+    }
+  }
+
+  Future<void> _toggleMic() async {
+    _micOn = !_micOn;
+    await _engine?.muteLocalAudioStream(!_micOn);
+    if (_micOn) {
+      if (!_translatedVoicePlaying) unawaited(_aiSession.resumeCapture());
+    } else {
+      unawaited(_aiSession.pauseCapture());
+    }
+    setState(() {});
   }
 
   @override
@@ -158,7 +288,7 @@ class _CallScreenState extends State<CallScreen> {
                 setState(() => _duration = _formatDuration(d));
               });
             });
-            _startAiSession();
+            unawaited(_startAiSession());
           },
           onLeaveChannel: (connection, stats) {
             if (!mounted) return;
@@ -180,6 +310,7 @@ class _CallScreenState extends State<CallScreen> {
           onUserJoined: (connection, remoteUid, elapsed) {
             if (!mounted) return;
             setState(() => _status = 'Connected ✓');
+            unawaited(_muteOriginalRemoteAudio());
           },
           onUserOffline: (connection, remoteUid, reason) {
             if (!mounted) return;
@@ -261,20 +392,23 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _startAiSession() async {
+    await _probeAiServer();
+
     _bus.start(myLang: _myLang);
     unawaited(_room.setMyLanguage(_myLang));
-    try {
-      // Hear the AI translation rather than the untranslated original.
-      await _engine?.muteAllRemoteAudioStreams(true);
-    } catch (e) {
-      debugPrint('CallScreen mute remote audio failed: $e');
+    await _muteOriginalRemoteAudio();
+    if (!_aiSession.isRunning) {
+      _aiSession.setMyLanguage(_myLang);
+      await _aiSession.start(
+        srcLang: _myLang,
+        callId: widget.callId,
+      );
     }
-    if (_aiSession.isRunning) return;
-    _aiSession.setMyLanguage(_myLang);
-    await _aiSession.start(
-      srcLang: _myLang,
-      callId: widget.callId,
-    );
+
+    if (mounted && !_langSheetShown) {
+      _langSheetShown = true;
+      await _promptForLanguage();
+    }
   }
 
   Future<void> _tryReconnect() async {
@@ -375,10 +509,9 @@ class _CallScreenState extends State<CallScreen> {
         }
 
         final isCaller = call.callerUid == myUid;
-        _myLang = isCaller ? call.callerLang : call.calleeLang;
+        _seedLangFromCall(call, isCaller);
+        // Other side may change language mid-call — keep the label fresh.
         _otherLang = isCaller ? call.calleeLang : call.callerLang;
-        _aiSession.setMyLanguage(_myLang);
-        _bus.setMyLanguage(_myLang);
 
         _joinIfReady(call.channelName);
 
@@ -466,6 +599,15 @@ class _CallScreenState extends State<CallScreen> {
                               ],
                             ),
                           ),
+                          if (_aiReachable == false)
+                            Icon(Icons.cloud_off,
+                                color: Colors.red.shade400, size: 22),
+                          if (_joined)
+                            TextButton.icon(
+                              onPressed: _promptForLanguage,
+                              icon: const Icon(Icons.translate, size: 18),
+                              label: Text(_myLang.toUpperCase()),
+                            ),
                         ],
                       ),
                     ),
@@ -491,6 +633,7 @@ class _CallScreenState extends State<CallScreen> {
                               transcript: _lastTranscript,
                               translation: _lastTranslation,
                               isSending: _isSending,
+                              onPickMyLang: _promptForLanguage,
                             ),
                           ],
                         ],
@@ -500,21 +643,39 @@ class _CallScreenState extends State<CallScreen> {
                       top: false,
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: SizedBox(
-                          width: double.infinity,
-                          height: 48,
-                          child: FilledButton.icon(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: Colors.redAccent,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
+                        child: Row(
+                          children: [
+                            if (_joined) ...[
+                              SizedBox(
+                                height: 48,
+                                child: OutlinedButton.icon(
+                                  onPressed: _toggleMic,
+                                  icon: Icon(
+                                    _micOn ? Icons.mic : Icons.mic_off,
+                                  ),
+                                  label: Text(_micOn ? 'Mute' : 'Unmute'),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                            ],
+                            Expanded(
+                              child: SizedBox(
+                                height: 48,
+                                child: FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: Colors.redAccent,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                  ),
+                                  onPressed: _ending ? null : _endCall,
+                                  icon: const Icon(Icons.call_end),
+                                  label: const Text('End call'),
+                                ),
                               ),
                             ),
-                            onPressed: _ending ? null : _endCall,
-                            icon: const Icon(Icons.call_end),
-                            label: const Text('End call'),
-                          ),
+                          ],
                         ),
                       ),
                     ),
@@ -560,6 +721,7 @@ class _ChatBubbles extends StatelessWidget {
     required this.transcript,
     required this.translation,
     required this.isSending,
+    this.onPickMyLang,
   });
 
   final String myLang;
@@ -567,6 +729,7 @@ class _ChatBubbles extends StatelessWidget {
   final String transcript;
   final String translation;
   final bool isSending;
+  final VoidCallback? onPickMyLang;
 
   @override
   Widget build(BuildContext context) {
@@ -583,16 +746,20 @@ class _ChatBubbles extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: _MiniInfo(
-                label: 'Your language',
-                value: myLang.toUpperCase(),
-                color: Theme.of(context).colorScheme.primary,
+              child: InkWell(
+                onTap: onPickMyLang,
+                borderRadius: BorderRadius.circular(14),
+                child: _MiniInfo(
+                  label: 'Your language (tap to change)',
+                  value: myLang.toUpperCase(),
+                  color: Theme.of(context).colorScheme.primary,
+                ),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: _MiniInfo(
-                label: 'Receiver language',
+                label: 'Other language',
                 value: otherLang.toUpperCase(),
                 color: Theme.of(context).colorScheme.secondary,
               ),
