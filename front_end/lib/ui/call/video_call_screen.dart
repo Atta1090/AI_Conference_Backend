@@ -103,6 +103,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         if (!mounted) return;
         setState(() => _aiPhase = phase);
       },
+      onError: _onAiError,
     );
     _bus = MeetingTranslationBus(
       room: _room,
@@ -115,8 +116,21 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         });
       },
       onSpeakingChanged: _onTranslatedSpeechChanged,
+      onError: _onAiError,
     );
     _initAgora();
+  }
+
+  void _onAiError(Object e) {
+    debugPrint('VideoCallScreen AI error: $e');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Call AI error: $e'),
+        backgroundColor: Colors.red.shade800,
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   /// Publish my words so the other side can translate them into their own
@@ -126,6 +140,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       await _room.publish(text: text, lang: lang);
     } catch (e) {
       debugPrint('VideoCallScreen publish failed: $e');
+      _onAiError('Firestore publish failed (check firestore.rules): $e');
     }
   }
 
@@ -137,7 +152,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     if (speaking) {
       unawaited(_aiSession.pauseCapture());
     } else if (_micOn) {
-      // Do not resume STT while the user has muted the mic.
+      // Always apply resume when speaking ends (meeting pattern).
       unawaited(_aiSession.resumeCapture());
     }
   }
@@ -259,6 +274,19 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
+  /// Free the mic for STT (`record`). Agora only carries video in calls.
+  Future<void> _releaseAgoraMicForStt() async {
+    try {
+      await _engine?.enableLocalAudio(false);
+      await _engine?.muteLocalAudioStream(true);
+      await _engine?.updateChannelMediaOptions(
+        const ChannelMediaOptions(publishMicrophoneTrack: false),
+      );
+    } catch (e) {
+      debugPrint('VideoCallScreen release Agora mic failed: $e');
+    }
+  }
+
   @override
   void dispose() {
     _durationTimer?.cancel();
@@ -363,8 +391,9 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     }
   }
 
-  void _joinIfReady(String channelName) {
+  void _joinIfReady(String channelName, String status) {
     if (!widget.autoJoin) return;
+    if (status != 'accepted') return;
     if (_joined || _joining) return;
     if (_engine == null) {
       _pendingChannel = channelName;
@@ -387,7 +416,8 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
         channelId: channelName,
         uid: 0,
         options: const ChannelMediaOptions(
-          publishMicrophoneTrack: true,
+          // Mic kept free for MeetingAiSession STT; meaning goes via Firestore.
+          publishMicrophoneTrack: false,
           publishCameraTrack: true,
           autoSubscribeAudio: true,
           autoSubscribeVideo: true,
@@ -405,22 +435,35 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   }
 
   Future<void> _startAi() async {
-    await _probeAiServer();
+    try {
+      await _probeAiServer();
+      await _releaseAgoraMicForStt();
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await _muteOriginalRemoteAudio();
 
-    _bus.start(myLang: _myLang);
-    await _muteOriginalRemoteAudio();
-    unawaited(_room.setMyLanguage(_myLang));
-    if (!_aiSession.isRunning) {
-      _aiSession.setMyLanguage(_myLang);
-      await _aiSession.start(
-        srcLang: _myLang,
-        callId: widget.callId,
-      );
-    }
+      // Same order as meetings: bus + STT first, language sheet after.
+      _bus.start(myLang: _myLang);
+      unawaited(_room.setMyLanguage(_myLang));
+      if (!_aiSession.isRunning) {
+        _aiSession.setMyLanguage(_myLang);
+        await _aiSession.start(
+          srcLang: _myLang,
+          callId: widget.callId,
+        );
+      }
+      if (mounted) {
+        setState(() {
+          _lastTranscript = 'Listening…';
+          _aiPhase = 'listening';
+        });
+      }
 
-    if (mounted && !_langSheetShown) {
-      _langSheetShown = true;
-      await _promptForLanguage();
+      if (mounted && !_langSheetShown) {
+        _langSheetShown = true;
+        await _promptForLanguage();
+      }
+    } catch (e) {
+      _onAiError(e);
     }
   }
 
@@ -451,8 +494,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   Future<void> _toggleMic() async {
     _micOn = !_micOn;
-    await _engine?.muteLocalAudioStream(!_micOn);
-    // Mute must also stop STT publish, otherwise the other side still hears us.
+    // Agora mic stays unpublished; mute only controls local STT capture.
     if (_micOn) {
       if (!_translatedVoicePlaying) unawaited(_aiSession.resumeCapture());
     } else {
@@ -483,7 +525,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           publishScreenCaptureVideo: false,
           publishScreenCaptureAudio: false,
           publishCameraTrack: true,
-          publishMicrophoneTrack: true,
+          publishMicrophoneTrack: false,
         ),
       );
       setState(() => _sharingScreen = false);
@@ -506,7 +548,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           publishScreenCaptureVideo: true,
           publishScreenCaptureAudio: false,
           publishCameraTrack: false,
-          publishMicrophoneTrack: true,
+          publishMicrophoneTrack: false,
         ),
       );
       setState(() => _sharingScreen = true);
@@ -611,12 +653,22 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
           WidgetsBinding.instance.addPostFrameCallback((_) => _endCall());
         }
 
-        _joinIfReady(call.channelName);
         WidgetsBinding.instance
             .addPostFrameCallback((_) => _ensureNamesLoaded(call));
 
         final isCaller = call.callerUid == myUid;
         _seedLangFromCall(call, isCaller);
+
+        if (!_joined && call.status == 'ringing') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _joined) return;
+            if (_status != 'Ringing…') {
+              setState(() => _status = 'Ringing…');
+            }
+          });
+        }
+
+        _joinIfReady(call.channelName, call.status);
         final otherName = isCaller
             ? (_calleeName ?? 'Receiver')
             : (_callerName ?? 'Caller');

@@ -14,7 +14,6 @@ class OutgoingCallScreen extends StatefulWidget {
 }
 
 class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
-  String? _callId;
   String? _error;
 
   @override
@@ -28,7 +27,12 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
       final repo = CallsRepo(FirebaseFirestore.instance);
       final callId = await repo.startCall(calleeUid: widget.calleeUid);
       if (!mounted) return;
-      setState(() => _callId = callId);
+      // Replace so CallScreen owns the route (no embed/rebuild lifecycle bugs).
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => CallScreen(callId: callId, autoJoin: true),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
@@ -43,31 +47,28 @@ class _OutgoingCallScreenState extends State<OutgoingCallScreen> {
         body: Center(child: Text(_error!)),
       );
     }
-    if (_callId == null) {
-      return Scaffold(
-        body: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.call, size: 72, color: Theme.of(context).colorScheme.primary),
-                  const SizedBox(height: 14),
-                  Text(
-                    'Starting call…',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 12),
-                  const CircularProgressIndicator(),
-                ],
-              ),
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.call,
+                    size: 72, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(height: 14),
+                Text(
+                  'Starting call…',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 12),
+                const CircularProgressIndicator(),
+              ],
             ),
           ),
         ),
-      );
-    }
-    return CallScreen(callId: _callId!, autoJoin: true);
+      ),
+    );
   }
 }
-

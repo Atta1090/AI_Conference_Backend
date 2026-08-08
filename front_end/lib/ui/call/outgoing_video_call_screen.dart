@@ -15,7 +15,6 @@ class OutgoingVideoCallScreen extends StatefulWidget {
 }
 
 class _OutgoingVideoCallScreenState extends State<OutgoingVideoCallScreen> {
-  String? _callId;
   String? _error;
 
   @override
@@ -29,7 +28,11 @@ class _OutgoingVideoCallScreenState extends State<OutgoingVideoCallScreen> {
       final repo = CallsRepo(FirebaseFirestore.instance);
       final callId = await repo.startVideoCall(calleeUid: widget.calleeUid);
       if (!mounted) return;
-      setState(() => _callId = callId);
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => VideoCallScreen(callId: callId, autoJoin: true),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
@@ -44,34 +47,31 @@ class _OutgoingVideoCallScreenState extends State<OutgoingVideoCallScreen> {
         body: Center(child: Text(_error!)),
       );
     }
-    if (_callId == null) {
-      return Scaffold(
-        body: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.videocam,
-                    size: 72,
-                    color: Theme.of(context).colorScheme.secondary,
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    'Starting video call…',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 12),
-                  const CircularProgressIndicator(),
-                ],
-              ),
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.videocam,
+                  size: 72,
+                  color: Theme.of(context).colorScheme.secondary,
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  'Starting video call…',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 12),
+                const CircularProgressIndicator(),
+              ],
             ),
           ),
         ),
-      );
-    }
-    return VideoCallScreen(callId: _callId!, autoJoin: true);
+      ),
+    );
   }
 }

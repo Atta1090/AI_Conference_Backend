@@ -64,6 +64,12 @@ class MeetingTranslationBus {
   bool get isSpeaking => _working;
 
   void start({required String myLang}) {
+    // Allow restart after dispose()/endCall races (calls hit this often).
+    _disposed = false;
+    _primed = false;
+    _working = false;
+    _queue.clear();
+    _lastSpokenNorm = '';
     _myLang = myLang;
     _myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     _sub?.cancel();
@@ -85,6 +91,7 @@ class MeetingTranslationBus {
     await _sub?.cancel();
     _sub = null;
     _queue.clear();
+    _working = false;
     await _tts.stop();
   }
 

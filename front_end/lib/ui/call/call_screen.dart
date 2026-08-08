@@ -87,6 +87,7 @@ class _CallScreenState extends State<CallScreen> {
         if (!mounted) return;
         setState(() => _aiPhase = phase);
       },
+      onError: _onAiError,
     );
     _bus = MeetingTranslationBus(
       room: _room,
@@ -96,8 +97,21 @@ class _CallScreenState extends State<CallScreen> {
         setState(() => _lastTranslation = translated);
       },
       onSpeakingChanged: _onTranslatedSpeechChanged,
+      onError: _onAiError,
     );
     _initAgora();
+  }
+
+  void _onAiError(Object e) {
+    debugPrint('CallScreen AI error: $e');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Call AI error: $e'),
+        backgroundColor: Colors.red.shade800,
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   /// Publish my words so the other side hears them in their own language.
@@ -106,6 +120,7 @@ class _CallScreenState extends State<CallScreen> {
       await _room.publish(text: text, lang: lang);
     } catch (e) {
       debugPrint('CallScreen publish failed: $e');
+      _onAiError('Firestore publish failed (check firestore.rules): $e');
     }
   }
 
@@ -116,8 +131,12 @@ class _CallScreenState extends State<CallScreen> {
     if (mounted) setState(() {});
     if (speaking) {
       unawaited(_aiSession.pauseCapture());
-    } else if (_micOn) {
-      unawaited(_aiSession.resumeCapture());
+    } else {
+      // Always resume like meetings — a raced pause must not leave one-way mode.
+      // Mute still honored inside resume path via _micOn gate below.
+      if (_micOn) {
+        unawaited(_aiSession.resumeCapture());
+      }
     }
   }
 
@@ -235,9 +254,23 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
+  /// Stop Agora from capturing the mic so `record`/STT can hear speech.
+  /// muteLocalAudioStream alone is NOT enough — enableLocalAudio(false) is.
+  Future<void> _releaseAgoraMicForStt() async {
+    try {
+      await _engine?.enableLocalAudio(false);
+      await _engine?.muteLocalAudioStream(true);
+      await _engine?.updateChannelMediaOptions(
+        const ChannelMediaOptions(publishMicrophoneTrack: false),
+      );
+    } catch (e) {
+      debugPrint('CallScreen release Agora mic failed: $e');
+    }
+  }
+
   Future<void> _toggleMic() async {
     _micOn = !_micOn;
-    await _engine?.muteLocalAudioStream(!_micOn);
+    // Agora mic stays unpublished; mute only controls local STT capture.
     if (_micOn) {
       if (!_translatedVoicePlaying) unawaited(_aiSession.resumeCapture());
     } else {
@@ -332,7 +365,8 @@ class _CallScreenState extends State<CallScreen> {
       );
 
       await engine.enableAudio();
-      await engine.setAudioScenario(AudioScenarioType.audioScenarioChatroom);
+      // Do NOT use audioScenarioChatroom — it can exclusive-lock the mic so
+      // MeetingAiSession/`record` never hears speech (no loading, no STT).
       await engine.setCloudProxy(CloudProxyType.tcpProxy);
 
       _engine = engine;
@@ -346,8 +380,11 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
-  void _joinIfReady(String channelName) {
+  void _joinIfReady(String channelName, String status) {
     if (!widget.autoJoin) return;
+    // Caller must wait until the other side accepts — joining while "ringing"
+    // starts STT early and the callee's bus primes away those utterances.
+    if (status != 'accepted') return;
     if (_joined || _joining) return;
     if (_engine == null) {
       _pendingChannel = channelName;
@@ -371,7 +408,9 @@ class _CallScreenState extends State<CallScreen> {
         channelId: channelName,
         uid: 0,
         options: const ChannelMediaOptions(
-          publishMicrophoneTrack: true,
+          // Voice meaning travels via STT → Firestore → translate → device TTS.
+          // Keep Agora mic free for the recorder.
+          publishMicrophoneTrack: false,
           autoSubscribeAudio: true,
           clientRoleType: ClientRoleType.clientRoleBroadcaster,
         ),
@@ -392,22 +431,36 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _startAiSession() async {
-    await _probeAiServer();
+    try {
+      await _probeAiServer();
+      await _releaseAgoraMicForStt();
+      // Give Android a moment to release AudioRecord to the `record` package.
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await _muteOriginalRemoteAudio();
 
-    _bus.start(myLang: _myLang);
-    unawaited(_room.setMyLanguage(_myLang));
-    await _muteOriginalRemoteAudio();
-    if (!_aiSession.isRunning) {
-      _aiSession.setMyLanguage(_myLang);
-      await _aiSession.start(
-        srcLang: _myLang,
-        callId: widget.callId,
-      );
-    }
+      // Same order as meetings: receive + record FIRST, language sheet after.
+      _bus.start(myLang: _myLang);
+      unawaited(_room.setMyLanguage(_myLang));
+      if (!_aiSession.isRunning) {
+        _aiSession.setMyLanguage(_myLang);
+        await _aiSession.start(
+          srcLang: _myLang,
+          callId: widget.callId,
+        );
+      }
+      if (mounted) {
+        setState(() {
+          _lastTranscript = 'Listening…';
+          _aiPhase = 'listening';
+        });
+      }
 
-    if (mounted && !_langSheetShown) {
-      _langSheetShown = true;
-      await _promptForLanguage();
+      if (mounted && !_langSheetShown) {
+        _langSheetShown = true;
+        await _promptForLanguage();
+      }
+    } catch (e) {
+      _onAiError(e);
     }
   }
 
@@ -513,7 +566,16 @@ class _CallScreenState extends State<CallScreen> {
         // Other side may change language mid-call — keep the label fresh.
         _otherLang = isCaller ? call.calleeLang : call.callerLang;
 
-        _joinIfReady(call.channelName);
+        if (!_joined && call.status == 'ringing') {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || _joined) return;
+            if (_status != 'Ringing…') {
+              setState(() => _status = 'Ringing…');
+            }
+          });
+        }
+
+        _joinIfReady(call.channelName, call.status);
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _ensureNamesLoaded(call);
@@ -633,6 +695,9 @@ class _CallScreenState extends State<CallScreen> {
                               transcript: _lastTranscript,
                               translation: _lastTranslation,
                               isSending: _isSending,
+                              phase: _aiPhase,
+                              aiReachable: _aiReachable,
+                              micOn: _micOn,
                               onPickMyLang: _promptForLanguage,
                             ),
                           ],
@@ -721,6 +786,9 @@ class _ChatBubbles extends StatelessWidget {
     required this.transcript,
     required this.translation,
     required this.isSending,
+    required this.phase,
+    required this.micOn,
+    this.aiReachable,
     this.onPickMyLang,
   });
 
@@ -729,10 +797,24 @@ class _ChatBubbles extends StatelessWidget {
   final String transcript;
   final String translation;
   final bool isSending;
+  final String phase;
+  final bool micOn;
+  final bool? aiReachable;
   final VoidCallback? onPickMyLang;
+
+  String get _statusLabel {
+    if (aiReachable == false) return 'AI server offline';
+    if (!micOn) return 'Muted';
+    if (isSending || phase == 'processing') return 'Processing speech…';
+    if (phase == 'speaking') return 'Playing translation…';
+    if (phase == 'listening') return 'Listening…';
+    return phase;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final showSpinner =
+        isSending || phase == 'processing' || phase == 'listening';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -766,6 +848,30 @@ class _ChatBubbles extends StatelessWidget {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            if (showSpinner) ...[
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+            ],
+            Expanded(
+              child: Text(
+                _statusLabel,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: aiReachable == false
+                          ? Colors.red
+                          : Theme.of(context).colorScheme.primary,
+                    ),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 16),
         _Bubble(
           alignment: Alignment.centerRight,
@@ -779,23 +885,9 @@ class _ChatBubbles extends StatelessWidget {
           alignment: Alignment.centerLeft,
           color: Colors.blue.withOpacity(0.14),
           border: Colors.blue.withOpacity(0.35),
-          title: 'Translation',
+          title: 'Other person (in your language)',
           value: translation.isEmpty ? '...' : translation,
         ),
-        const SizedBox(height: 10),
-        if (isSending)
-          const Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-              SizedBox(width: 10),
-              Text('Translating…'),
-            ],
-          ),
       ],
     );
   }
