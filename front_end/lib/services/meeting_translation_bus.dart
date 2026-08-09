@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'ai_client.dart';
 import 'device_tts.dart';
 import 'room_utterances.dart';
+import 'stage_log.dart';
 
 /// The receiving half of the meeting pipeline.
 ///
@@ -73,9 +74,11 @@ class MeetingTranslationBus {
     _myLang = myLang;
     _myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     _sub?.cancel();
+    StageLog.step('BUS', 'Listening for remote utterances', {'myLang': myLang});
     _sub = _room.watch().listen(
       _onSnapshot,
       onError: (Object e) {
+        StageLog.step('BUS', 'Firestore stream error: $e');
         debugPrint('MeetingTranslationBus stream error: $e');
         onError?.call(e);
       },
@@ -130,8 +133,16 @@ class MeetingTranslationBus {
         final original = u.text.trim();
 
         String translated = original;
+        StageLog.step('BUS', 'Remote utterance received', {
+          'from': u.speakerName,
+          'lang': u.lang,
+        });
         if (u.lang != _myLang) {
           try {
+            StageLog.step('TRANSLATE', 'POST /translate', {
+              'from': u.lang,
+              'to': _myLang,
+            });
             final res = await _ai.translate(
               text: original,
               sourceLanguage: u.lang,
@@ -139,7 +150,9 @@ class MeetingTranslationBus {
             );
             final out = res.translatedText.trim();
             if (out.isNotEmpty) translated = out;
+            StageLog.step('TRANSLATE', 'Done for caption/TTS');
           } catch (e) {
+            StageLog.step('TRANSLATE', 'Failed: $e');
             debugPrint('MeetingTranslationBus translate error: $e');
             onError?.call(e);
           }
@@ -159,17 +172,19 @@ class MeetingTranslationBus {
         if (speakEnabled && translated.isNotEmpty) {
           // Pause mic only for this one TTS play so the listener can answer
           // as soon as this sentence finishes (two-way conversation).
+          StageLog.step('TTS', 'Speaking on device', {'lang': _myLang});
           onSpeakingChanged?.call(true);
           try {
-            await _tts.speak(translated, _myLang).timeout(
-              Duration(seconds: (8 + translated.length ~/ 8).clamp(8, 30)),
-            );
-          } on TimeoutException {
-            debugPrint('MeetingTranslationBus tts timed out; releasing mic');
-            try {
-              await _tts.stop();
-            } catch (_) {}
+            // DeviceTts already waits for completion + audio focus.
+            final ok = await _tts.speak(translated, _myLang);
+            if (!ok) {
+              StageLog.step(
+                'TTS',
+                'Speak failed — install $_myLang voice in phone TTS settings',
+              );
+            }
           } catch (e) {
+            StageLog.step('TTS', 'Error: $e');
             debugPrint('MeetingTranslationBus tts error: $e');
           } finally {
             // Always release the mic — never leave one-way mode stuck on.

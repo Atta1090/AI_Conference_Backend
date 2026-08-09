@@ -13,6 +13,7 @@ import '../../services/device_tts.dart';
 import '../../services/meeting_ai_session.dart';
 import '../../services/meeting_translation_bus.dart';
 import '../../services/room_utterances.dart';
+import '../../services/stage_log.dart';
 import '../summary_screen.dart';
 import '../widgets/live_caption_overlay.dart';
 import 'call_models.dart';
@@ -65,6 +66,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   String _myLang = 'en';
   bool _langSeeded = false;
   bool _langSheetShown = false;
+  bool _loggedRinging = false;
   bool? _aiReachable;
 
   /// My own recognized speech.
@@ -393,8 +395,17 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   void _joinIfReady(String channelName, String status) {
     if (!widget.autoJoin) return;
-    if (status != 'accepted') return;
+    if (status != 'accepted') {
+      if (status == 'ringing' && !_loggedRinging) {
+        _loggedRinging = true;
+        StageLog.step('CALL', 'Waiting for accept (ringing)');
+      }
+      return;
+    }
     if (_joined || _joining) return;
+    StageLog.step('CALL', 'Call accepted — joining Agora video', {
+      'channel': channelName,
+    });
     if (_engine == null) {
       _pendingChannel = channelName;
       return;
@@ -436,10 +447,29 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
   Future<void> _startAi() async {
     try {
+      StageLog.step('CALL', 'Starting video-call AI session', {
+        'callId': widget.callId,
+        'lang': _myLang,
+        'aiServer': AppConfig.aiServerBaseUrl,
+      });
       await _probeAiServer();
+      StageLog.step(
+        'CALL',
+        _aiReachable == true
+            ? 'AI server reachable'
+            : 'AI server unreachable — check IP/Wi‑Fi',
+      );
       await _releaseAgoraMicForStt();
+      StageLog.step('CALL', 'Agora mic released for STT recorder');
       await Future<void>.delayed(const Duration(milliseconds: 350));
       await _muteOriginalRemoteAudio();
+      try {
+        await _engine?.setDefaultAudioRouteToSpeakerphone(true);
+        await _engine?.setEnableSpeakerphone(true);
+      } catch (e) {
+        debugPrint('VideoCallScreen speakerphone failed: $e');
+      }
+      StageLog.step('CALL', 'Remote Agora audio muted; speaker on for TTS');
 
       // Same order as meetings: bus + STT first, language sheet after.
       _bus.start(myLang: _myLang);

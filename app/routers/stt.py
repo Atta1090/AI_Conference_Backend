@@ -1,6 +1,7 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
+from app.core.stage_log import stage
 from app.schemas.pipeline import TranscriptionResult
 from app.services import audio_utils, noise_reduction, stt
 
@@ -35,6 +36,18 @@ async def transcribe(
     if not data:
         raise HTTPException(status_code=400, detail="Empty audio file.")
 
+    stage(
+        "STT",
+        "Transcribing audio clip",
+        bytes=len(data),
+        language=language or "auto",
+        denoise=denoise,
+    )
     # Decoding and Whisper inference are CPU-bound and would otherwise block
     # the event loop, stalling every other request until they finish.
-    return await run_in_threadpool(_decode_and_transcribe, data, language, denoise)
+    result = await run_in_threadpool(_decode_and_transcribe, data, language, denoise)
+    preview = (result.text or "").strip().replace("\n", " ")
+    if len(preview) > 80:
+        preview = preview[:77] + "…"
+    stage("STT", f"Done → \"{preview or '(empty)'}\"")
+    return result

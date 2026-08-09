@@ -13,6 +13,7 @@ import '../../services/device_tts.dart';
 import '../../services/meeting_ai_session.dart';
 import '../../services/meeting_translation_bus.dart';
 import '../../services/room_utterances.dart';
+import '../../services/stage_log.dart';
 import '../summary_screen.dart';
 import 'call_models.dart';
 
@@ -60,6 +61,7 @@ class _CallScreenState extends State<CallScreen> {
 
   bool _langSeeded = false;
   bool _langSheetShown = false;
+  bool _loggedRinging = false;
   bool? _aiReachable;
   bool _micOn = true;
   bool _translatedVoicePlaying = false;
@@ -384,8 +386,17 @@ class _CallScreenState extends State<CallScreen> {
     if (!widget.autoJoin) return;
     // Caller must wait until the other side accepts — joining while "ringing"
     // starts STT early and the callee's bus primes away those utterances.
-    if (status != 'accepted') return;
+    if (status != 'accepted') {
+      if (status == 'ringing' && !_loggedRinging) {
+        _loggedRinging = true;
+        StageLog.step('CALL', 'Waiting for accept (ringing)');
+      }
+      return;
+    }
     if (_joined || _joining) return;
+    StageLog.step('CALL', 'Call accepted — joining Agora', {
+      'channel': channelName,
+    });
     if (_engine == null) {
       _pendingChannel = channelName;
       return;
@@ -432,11 +443,30 @@ class _CallScreenState extends State<CallScreen> {
 
   Future<void> _startAiSession() async {
     try {
+      StageLog.step('CALL', 'Starting AI session', {
+        'callId': widget.callId,
+        'lang': _myLang,
+        'aiServer': AppConfig.aiServerBaseUrl,
+      });
       await _probeAiServer();
+      StageLog.step(
+        'CALL',
+        _aiReachable == true
+            ? 'AI server reachable'
+            : 'AI server unreachable — check IP/Wi‑Fi',
+      );
       await _releaseAgoraMicForStt();
+      StageLog.step('CALL', 'Agora mic released for STT recorder');
       // Give Android a moment to release AudioRecord to the `record` package.
       await Future<void>.delayed(const Duration(milliseconds: 350));
       await _muteOriginalRemoteAudio();
+      try {
+        await _engine?.setDefaultAudioRouteToSpeakerphone(true);
+        await _engine?.setEnableSpeakerphone(true);
+      } catch (e) {
+        debugPrint('CallScreen speakerphone failed: $e');
+      }
+      StageLog.step('CALL', 'Remote Agora audio muted; speaker on for TTS');
 
       // Same order as meetings: receive + record FIRST, language sheet after.
       _bus.start(myLang: _myLang);

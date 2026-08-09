@@ -244,21 +244,26 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import 'app_config.dart';
 import 'firebase_options.dart';
+import 'services/stage_log.dart';
 import 'ui/brand_splash.dart';
 import 'ui/login_screen.dart';
 import 'ui/main_dashboard.dart'; // ✅ NEW IMPORT
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  StageLog.boot(AppConfig.aiServerBaseUrl);
 
   // ✅ FIX: prevent duplicate Firebase initialization
   if (Firebase.apps.isEmpty) {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+    StageLog.step('BOOT', 'Firebase initialized');
   }
 
+  StageLog.step('BOOT', 'UI starting');
   runApp(const AppRoot());
 }
 

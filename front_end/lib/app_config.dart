@@ -15,7 +15,7 @@ class AppConfig {
   /// Keep this in sync with your PC Wi‑Fi IPv4 (`ipconfig`).
   static const String aiServerBaseUrl = String.fromEnvironment(
     'AI_SERVER_BASE_URL',
-    defaultValue: 'http://192.168.0.104:8000',
+    defaultValue: 'http://192.168.133.198:8000',
   );
 
   /// Agora App ID.

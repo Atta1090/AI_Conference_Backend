@@ -11,11 +11,12 @@ Exposes the meeting audio pipeline as REST endpoints:
 * ``/chatbot/ask``      — Meeting transcript Q&A (Gemma 3)
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.stage_log import banner, stage
 from app.routers import chatbot, health, noise, pipeline, stt, summarization, translation, tts
 
 app = FastAPI(
@@ -31,6 +32,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def stage_request_log(request: Request, call_next):
+    """Log each API hit so the terminal shows what the phones are doing."""
+    path = request.url.path
+    # Skip noisy static media probes.
+    if path.startswith("/media"):
+        return await call_next(request)
+
+    client = request.client.host if request.client else "?"
+    stage("HTTP", f"{request.method} {path}", from_ip=client)
+    response = await call_next(request)
+    stage(
+        "HTTP",
+        f"{request.method} {path} → {response.status_code}",
+        from_ip=client,
+    )
+    return response
+
+
+@app.on_event("startup")
+def _on_startup() -> None:
+    banner()
 
 app.include_router(health.router)
 app.include_router(stt.router)

@@ -9,6 +9,7 @@ import 'package:record/record.dart';
 import 'package:uuid/uuid.dart';
 
 import 'ai_client.dart';
+import 'stage_log.dart';
 
 /// Captures **my own** speech and turns it into text.
 ///
@@ -113,6 +114,11 @@ class MeetingAiSession {
     _listenAmplitude();
     onPhaseChanged?.call('listening');
     onCaption?.call('');
+    StageLog.step('STT', 'Listening for speech', {
+      'lang': _srcLang,
+      'meetingId': meetingId ?? '-',
+      'callId': callId ?? '-',
+    });
   }
 
   void setMyLanguage(String srcLang) {
@@ -261,6 +267,7 @@ class MeetingAiSession {
     _busy = true;
     onBusyChanged?.call(true);
     onPhaseChanged?.call('processing');
+    StageLog.step('STT', 'Speech ended — sending clip to backend');
     _heardSpeech = false;
     _lastSpeechAt = null;
     _speechStartedAt = null;
@@ -279,11 +286,18 @@ class MeetingAiSession {
 
       final bytes = await _stopRecordingBytes();
       if (bytes == null || bytes.length < minAudioBytes) {
+        StageLog.step('STT', 'Clip too short/empty — back to listening', {
+          'bytes': bytes?.length ?? 0,
+        });
         if (_running && !_paused) await _startRecording();
         onPhaseChanged?.call('listening');
         return;
       }
 
+      StageLog.step('STT', 'POST /stt/transcribe', {
+        'bytes': bytes.length,
+        'lang': _srcLang,
+      });
       final source = (await _ai.transcribe(
         audioBytes: bytes,
         language: _srcLang,
@@ -292,6 +306,7 @@ class MeetingAiSession {
           .trim();
 
       if (source.isEmpty) {
+        StageLog.step('STT', 'Backend returned empty transcript');
         onCaption?.call('');
         if (_running && !_paused) await _startRecording();
         onPhaseChanged?.call('listening');
@@ -348,8 +363,13 @@ class MeetingAiSession {
     _appendTranscript(source);
     onCaption?.call(source);
     _lastPublishedNorm = _normalize(source);
+    StageLog.step('PUBLISH', 'Recognized speech', {
+      'lang': _srcLang,
+      'text': source.length > 60 ? '${source.substring(0, 57)}…' : source,
+    });
     if (onUtterance != null) {
       await onUtterance!(source, _srcLang);
+      StageLog.step('PUBLISH', 'Saved to Firestore utterances');
     }
   }
 

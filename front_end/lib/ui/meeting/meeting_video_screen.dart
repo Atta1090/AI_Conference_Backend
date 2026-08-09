@@ -215,6 +215,8 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
   Future<void> _muteOriginalRemoteAudio() async {
     try {
       await _engine?.muteAllRemoteAudioStreams(true);
+      await _engine?.setDefaultAudioRouteToSpeakerphone(true);
+      await _engine?.setEnableSpeakerphone(true);
     } catch (e) {
       debugPrint('MeetingVideoScreen mute remote audio failed: $e');
     }
@@ -412,6 +414,11 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
   }
 
   Future<void> _startAi() async {
+    debugPrint(
+      '[ConvoBridge][MEETING] Starting AI '
+      '(meetingId=${widget.meetingId}, lang=$_myLang, '
+      'ai=${AppConfig.aiServerBaseUrl})',
+    );
     await _probeAiServer();
 
     // Receive side first, so we never miss what somebody says early on.
