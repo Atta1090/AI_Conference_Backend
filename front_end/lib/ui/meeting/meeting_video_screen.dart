@@ -12,6 +12,7 @@ import '../../services/ai_client.dart';
 import '../../services/device_tts.dart';
 import '../../services/meeting_ai_session.dart';
 import '../../services/meeting_translation_bus.dart';
+import '../../services/stage_log.dart';
 import '../summary_screen.dart';
 import '../widgets/live_caption_overlay.dart';
 import 'meeting_repo.dart';
@@ -182,8 +183,24 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
     if (mounted) setState(() {});
     if (speaking) {
       unawaited(_aiSession.pauseCapture());
-    } else {
+    } else if (_micOn) {
+      // Respect Mute: do not restart STT while the user is muted.
       unawaited(_aiSession.resumeCapture());
+    }
+  }
+
+  /// Stop Agora from capturing the mic so `record`/STT can hear every
+  /// participant (host and joiner). Meaning travels via Firestore, not Agora audio.
+  Future<void> _releaseAgoraMicForStt() async {
+    try {
+      await _engine?.enableLocalAudio(false);
+      await _engine?.muteLocalAudioStream(true);
+      await _engine?.updateChannelMediaOptions(
+        const ChannelMediaOptions(publishMicrophoneTrack: false),
+      );
+      StageLog.step('MEETING', 'Agora mic released for STT recorder');
+    } catch (e) {
+      debugPrint('MeetingVideoScreen release Agora mic failed: $e');
     }
   }
 
@@ -396,7 +413,9 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
         channelId: channelName,
         uid: 0,
         options: const ChannelMediaOptions(
-          publishMicrophoneTrack: true,
+          // Mic kept free for MeetingAiSession STT on host AND joiner.
+          // Meaning travels via Firestore → translate → device TTS.
+          publishMicrophoneTrack: false,
           publishCameraTrack: true,
           autoSubscribeAudio: true,
           autoSubscribeVideo: true,
@@ -414,29 +433,53 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
   }
 
   Future<void> _startAi() async {
-    debugPrint(
-      '[ConvoBridge][MEETING] Starting AI '
-      '(meetingId=${widget.meetingId}, lang=$_myLang, '
-      'ai=${AppConfig.aiServerBaseUrl})',
-    );
-    await _probeAiServer();
-
-    // Receive side first, so we never miss what somebody says early on.
-    _bus.start(myLang: _myLang);
-    await _muteOriginalRemoteAudio();
-
-    if (!_aiSession.isRunning) {
-      _aiSession.setMyLanguage(_myLang);
-      await _aiSession.start(
-        srcLang: _myLang,
-        meetingId: widget.meetingId,
+    try {
+      StageLog.step('MEETING', 'Starting AI session', {
+        'meetingId': widget.meetingId,
+        'isHost': widget.isHost,
+        'lang': _myLang,
+        'aiServer': AppConfig.aiServerBaseUrl,
+      });
+      await _probeAiServer();
+      StageLog.step(
+        'MEETING',
+        _aiReachable == true
+            ? 'AI server reachable'
+            : 'AI server unreachable — check IP/Wi‑Fi',
       );
-    }
-    unawaited(_repo.setMyLanguage(widget.meetingId, _myLang));
 
-    if (mounted && !_langSheetShown) {
-      _langSheetShown = true;
-      await _promptForLanguage();
+      // Critical for two-way: free mic before STT on every phone (incl. joiner).
+      await _releaseAgoraMicForStt();
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await _muteOriginalRemoteAudio();
+      StageLog.step('MEETING', 'Remote Agora audio muted; speaker on for TTS');
+
+      // Receive side first, so we never miss what somebody says early on.
+      _bus.start(myLang: _myLang);
+      if (!_aiSession.isRunning) {
+        _aiSession.setMyLanguage(_myLang);
+        await _aiSession.start(
+          srcLang: _myLang,
+          meetingId: widget.meetingId,
+        );
+      }
+      unawaited(_repo.setMyLanguage(widget.meetingId, _myLang));
+      StageLog.step('MEETING', 'STT + utterance bus active (two-way)');
+
+      if (mounted && !_langSheetShown) {
+        _langSheetShown = true;
+        await _promptForLanguage();
+      }
+    } catch (e) {
+      StageLog.step('MEETING', 'AI start failed: $e');
+      debugPrint('MeetingVideoScreen _startAi failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Meeting AI failed to start: $e'),
+          backgroundColor: Colors.red.shade800,
+        ),
+      );
     }
   }
 
@@ -492,7 +535,17 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
 
   Future<void> _toggleMic() async {
     _micOn = !_micOn;
-    await _engine?.muteLocalAudioStream(!_micOn);
+    // Agora mic stays unpublished; Mute must stop AI STT publish too,
+    // otherwise the other side still gets captions/voice from this phone.
+    if (_micOn) {
+      if (!_translatedVoicePlaying) {
+        unawaited(_aiSession.resumeCapture());
+      }
+      StageLog.step('MEETING', 'Mic unmuted — STT listening');
+    } else {
+      unawaited(_aiSession.pauseCapture());
+      StageLog.step('MEETING', 'Mic muted — STT paused');
+    }
     setState(() {});
   }
 
@@ -514,7 +567,7 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
           publishScreenCaptureVideo: false,
           publishScreenCaptureAudio: false,
           publishCameraTrack: true,
-          publishMicrophoneTrack: true,
+          publishMicrophoneTrack: false,
         ),
       );
       setState(() => _sharingScreen = false);
@@ -535,7 +588,7 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
           publishScreenCaptureVideo: true,
           publishScreenCaptureAudio: false,
           publishCameraTrack: false,
-          publishMicrophoneTrack: true,
+          publishMicrophoneTrack: false,
         ),
       );
       setState(() => _sharingScreen = true);
