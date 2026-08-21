@@ -21,9 +21,20 @@ _lock = threading.Lock()
 
 # Split on whitespace; keeps Arabic / CJK tokens intact as whole words.
 _WORD_RE = re.compile(r"\S+")
+_ARABIC_CHARS = re.compile(r"[\u0600-\u06FF]")
+_DEVANAGARI_CHARS = re.compile(r"[\u0900-\u097F]")
+_LATIN_CHARS = re.compile(r"[A-Za-z]")
+
+# Bias Whisper toward the expected script (helps Urdu/Arabic a lot on base).
+_LANG_PROMPTS: dict[str, str] = {
+    "ur": "السلام علیکم۔ یہ ایک ویڈیو میٹنگ کی گفتگو ہے۔",
+    "ar": "السلام عليكم. هذه محادثة في اجتماع عبر الفيديو.",
+    "hi": "नमस्ते। यह एक वीडियो मीटिंग की बातचीत है।",
+    "en": "Hello. This is a video meeting conversation.",
+}
 
 
-def sanitize_stt_text(text: str) -> str:
+def sanitize_stt_text(text: str, language: str | None = None) -> str:
     """Collapse Whisper repetition loops; drop unrecoverable hallucinations.
 
     Whisper often gets stuck on one token (e.g. Arabic «نحن نحن نحن…») or
@@ -51,7 +62,29 @@ def sanitize_stt_text(text: str) -> str:
     if _is_repetition_hallucination(words):
         return ""
 
-    return " ".join(words).strip()
+    cleaned = " ".join(words).strip()
+    if language and not _script_matches_language(cleaned, language):
+        # e.g. language=ur but Whisper emitted English recipe text.
+        return ""
+    return cleaned
+
+
+def _script_matches_language(text: str, language: str) -> bool:
+    """Drop clear wrong-script hallucinations for ur/ar/hi utterances."""
+    arabic = len(_ARABIC_CHARS.findall(text))
+    latin = len(_LATIN_CHARS.findall(text))
+    deva = len(_DEVANAGARI_CHARS.findall(text))
+
+    if language in {"ur", "ar"}:
+        # Expect Arabic/Urdu script; reject mostly-Latin "hallucinations".
+        if latin >= 12 and latin > (arabic * 2 + 4):
+            return False
+        return True
+    if language == "hi":
+        if latin >= 12 and latin > (deva * 2 + 4) and arabic < 4:
+            return False
+        return True
+    return True
 
 
 def _collapse_word_runs(words: list[str], max_run: int = 2) -> list[str]:
@@ -126,23 +159,32 @@ def transcribe(
     """
     model = _get_model()
 
-    segments_iter, info = model.transcribe(
-        samples,
-        beam_size=settings.stt_beam_size,
-        language=language,
-        vad_filter=settings.stt_vad_filter,
-        condition_on_previous_text=settings.stt_condition_on_previous_text,
+    # Urdu/Arabic/Hindi need a wider beam on the small base model.
+    beam = settings.stt_beam_size
+    if language in {"ur", "ar", "hi"}:
+        beam = max(beam, 5)
+
+    kwargs: dict = {
+        "beam_size": beam,
+        "language": language,
+        "vad_filter": settings.stt_vad_filter,
+        "condition_on_previous_text": settings.stt_condition_on_previous_text,
         # Greedy temperature + tighter no-speech cuts down "hello how are you"
         # style hallucinations on short / quiet meeting clips.
-        temperature=0.0,
-        no_speech_threshold=settings.stt_no_speech_threshold,
-        compression_ratio_threshold=settings.stt_compression_ratio_threshold,
-        without_timestamps=True,
-    )
+        "temperature": 0.0,
+        "no_speech_threshold": settings.stt_no_speech_threshold,
+        "compression_ratio_threshold": settings.stt_compression_ratio_threshold,
+        "without_timestamps": True,
+    }
+    prompt = _LANG_PROMPTS.get(language or "")
+    if prompt:
+        kwargs["initial_prompt"] = prompt
+
+    segments_iter, info = model.transcribe(samples, **kwargs)
 
     segments: list[TranscriptSegment] = []
     for seg in segments_iter:
-        cleaned = sanitize_stt_text(seg.text.strip())
+        cleaned = sanitize_stt_text(seg.text.strip(), language=language)
         if not cleaned:
             continue
         segments.append(
@@ -153,7 +195,9 @@ def transcribe(
             )
         )
 
-    full_text = sanitize_stt_text(" ".join(s.text for s in segments))
+    full_text = sanitize_stt_text(
+        " ".join(s.text for s in segments), language=language
+    )
 
     return TranscriptionResult(
         language=info.language,

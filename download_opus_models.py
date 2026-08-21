@@ -47,16 +47,43 @@ def _is_complete(model_id: str) -> bool:
     return weight.exists() and weight.stat().st_size > 50_000_000
 
 
-def _also_complete_in_hf_cache(model_id: str) -> bool:
-    """True if an older HF-cache install already has usable weights."""
+def _also_complete_in_hf_cache(model_id: str) -> Path | None:
+    """Return path to a usable pytorch_model.bin in HF cache, else None."""
     cache = Path(settings.model_cache_dir)
     root = cache / f"models--{model_id.replace('/', '--')}"
     if not root.exists():
-        return False
+        return None
     for path in root.rglob("pytorch_model.bin"):
         if path.stat().st_size > 50_000_000:
-            return True
-    return False
+            return path
+    return None
+
+
+def _materialize_from_cache(model_id: str, weight_src: Path) -> bool:
+    """Copy a complete HF-cache model into models/opus/<name>/."""
+    root = _local_dir(model_id)
+    root.mkdir(parents=True, exist_ok=True)
+    snap = weight_src.parent
+    for name in _SMALL_FILES + ["pytorch_model.bin"]:
+        src = snap / name
+        dest = root / name
+        if not src.exists():
+            if name == "generation_config.json":
+                continue
+            # Blobs layout: file may be a symlink/pointer; try weight_src dir only.
+            if name != "pytorch_model.bin":
+                continue
+            src = weight_src
+        if dest.exists() and dest.stat().st_size > 0:
+            if name != "pytorch_model.bin" or dest.stat().st_size > 50_000_000:
+                continue
+        try:
+            shutil.copy2(src, dest)
+            print(f"  copied {name}")
+        except OSError as exc:
+            print(f"  copy failed {name}: {exc}")
+            return False
+    return _is_complete(model_id)
 
 
 def _curl(url: str, dest: Path) -> bool:
@@ -125,16 +152,20 @@ def main() -> None:
         if _is_complete(model_id):
             print(f"SKIP (local): {model_id}")
             continue
-        if _also_complete_in_hf_cache(model_id):
-            print(f"SKIP (hf-cache): {model_id}")
-            continue
+        cached = _also_complete_in_hf_cache(model_id)
+        if cached is not None:
+            print(f"MATERIALIZE from hf-cache: {model_id}")
+            if _materialize_from_cache(model_id, cached):
+                print("  done\n")
+                continue
+            print("  materialize failed — will re-download")
         print(f"DOWNLOAD: {model_id}")
         _download_one(model_id)
         print("  done\n")
 
     print("Opus-MT download pass finished.")
     for model_id in pairs:
-        ok = _is_complete(model_id) or _also_complete_in_hf_cache(model_id)
+        ok = _is_complete(model_id)
         print(f"  [{'OK' if ok else 'MISSING'}] {model_id}")
 
 

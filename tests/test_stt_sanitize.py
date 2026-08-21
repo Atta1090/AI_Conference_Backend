@@ -37,3 +37,18 @@ def test_keeps_normal_sentence():
 def test_empty_and_whitespace():
     assert sanitize_stt_text("") == ""
     assert sanitize_stt_text("   ") == ""
+
+
+def test_rejects_english_hallucination_when_urdu_expected():
+    junk = "and use 3 tbsp of water. Next, we will add 2 fingers and 3 fingers."
+    assert sanitize_stt_text(junk, language="ur") == ""
+
+
+def test_keeps_urdu_when_language_urdu():
+    text = "مواصلات کا نظام بہت اہم ہے"
+    assert sanitize_stt_text(text, language="ur") == text
+
+
+def test_allows_mixed_urdu_with_short_english():
+    text = "میں OK کہہ رہا ہوں"
+    assert "OK" in sanitize_stt_text(text, language="ur")

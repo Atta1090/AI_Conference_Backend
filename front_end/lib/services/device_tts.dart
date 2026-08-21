@@ -27,7 +27,9 @@ class DeviceTts {
 
   static const Map<String, List<String>> _localeCandidates = {
     'en': ['en-US', 'en-GB', 'en-IN', 'en'],
-    'ur': ['ur-PK', 'ur-IN', 'ur'],
+    // Urdu voice is often missing; Hindi can read Arabic-script poorly but
+    // is better than silent. Prefer real Urdu locales first.
+    'ur': ['ur-PK', 'ur-IN', 'ur', 'hi-IN', 'hi'],
     'ar': ['ar-SA', 'ar-EG', 'ar-AE', 'ar'],
     'hi': ['hi-IN', 'hi'],
   };

@@ -140,6 +140,15 @@ On each phone:
 
 Install voice data for languages you will demo: **English, Urdu, Arabic, Hindi**.
 
+**Urdu is required for the client demo.** On each phone:
+1. Preferred engine: **Google Text-to-speech**
+2. Install **Urdu (Pakistan)** voice data
+3. Without it, both-sides-Urdu meetings show captions but often **no spoken audio**
+
+Also ensure Opus Urdu pairs exist on the PC:
+`models/opus/opus-mt-en-ur` and `models/opus/opus-mt-ur-en`
+(run `python download_opus_models.py` if missing).
+
 Without the voice pack, captions may still appear but **no speech** is heard.
 
 ---

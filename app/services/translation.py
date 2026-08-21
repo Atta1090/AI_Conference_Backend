@@ -45,6 +45,15 @@ def _resolve_model_source(model_id: str) -> str:
     weight = local / "pytorch_model.bin"
     if weight.exists() and weight.stat().st_size > 50_000_000:
         return str(local)
+
+    # Fall back to a complete HF-cache snapshot if models/opus is incomplete
+    # (common when only en-ar/hi were copied into opus/ and ur lives in cache).
+    cache = Path(settings.model_cache_dir)
+    root = cache / f"models--{model_id.replace('/', '--')}"
+    if root.exists():
+        for path in root.rglob("pytorch_model.bin"):
+            if path.stat().st_size > 50_000_000:
+                return str(path.parent)
     return model_id
 
 
