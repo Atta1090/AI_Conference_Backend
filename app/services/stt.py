@@ -63,28 +63,32 @@ def sanitize_stt_text(text: str, language: str | None = None) -> str:
         return ""
 
     cleaned = " ".join(words).strip()
-    if language and not _script_matches_language(cleaned, language):
-        # e.g. language=ur but Whisper emitted English recipe text.
+    if language and _is_unrelated_hallucination(cleaned, language):
         return ""
     return cleaned
 
 
-def _script_matches_language(text: str, language: str) -> bool:
-    """Drop clear wrong-script hallucinations for ur/ar/hi utterances."""
-    arabic = len(_ARABIC_CHARS.findall(text))
-    latin = len(_LATIN_CHARS.findall(text))
-    deva = len(_DEVANAGARI_CHARS.findall(text))
+def _is_unrelated_hallucination(text: str, language: str) -> bool:
+    """Drop obvious Whisper junk, but keep English words spoken under Urdu.
 
-    if language in {"ur", "ar"}:
-        # Expect Arabic/Urdu script; reject mostly-Latin "hallucinations".
-        if latin >= 12 and latin > (arabic * 2 + 4):
-            return False
+    A hard "must be Arabic script" filter hid real speech: Whisper-base often
+    emits English for Urdu audio, and the other phone then received nothing.
+    Those English lines are translated into the listener's language instead.
+    """
+    if language not in {"ur", "ar", "hi"}:
+        return False
+    lower = text.casefold()
+    if re.search(r"\b(tbsp|tablespoon|subscribe|thank you for watching)\b", lower):
         return True
-    if language == "hi":
-        if latin >= 12 and latin > (deva * 2 + 4) and arabic < 4:
-            return False
+    latin = len(_LATIN_CHARS.findall(text))
+    arabic = len(_ARABIC_CHARS.findall(text))
+    deva = len(_DEVANAGARI_CHARS.findall(text))
+    native = arabic if language in {"ur", "ar"} else deva
+    # Pure Latin and no native script *and* very long: likely a looped English
+    # hallucination, not a short code-switched meeting line.
+    if native == 0 and latin >= 80:
         return True
-    return True
+    return False
 
 
 def _collapse_word_runs(words: list[str], max_run: int = 2) -> list[str]:

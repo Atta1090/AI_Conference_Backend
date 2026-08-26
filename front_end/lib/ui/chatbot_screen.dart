@@ -1,15 +1,25 @@
 import 'package:flutter/material.dart';
 
 import '../services/ai_client.dart';
+import 'widgets/lang_text.dart';
 
 class ChatbotScreen extends StatefulWidget {
   final String? transcript;
   final String? meetingId;
 
+  /// Language to answer in — the language this user picked in the meeting.
+  final String? language;
+
+  /// Per-line transcript with spoken languages, so the backend can normalise a
+  /// mixed-language meeting before answering.
+  final List<TranscriptEntry>? utterances;
+
   const ChatbotScreen({
     super.key,
     this.transcript,
     this.meetingId,
+    this.language,
+    this.utterances,
   });
 
   @override
@@ -21,14 +31,33 @@ class _ChatbotScreenState extends State<ChatbotScreen> {
   final controller = TextEditingController();
   late final TextEditingController _transcriptController;
 
-  List<Map<String, String>> messages = [
-    {
-      "id": "1",
-      "text":
-          "Hello — I am your ConvoBridge Meeting Assistant. Ask questions about the transcript below.",
-      "sender": "bot"
-    }
-  ];
+  /// Greeting shown in the language the meeting was held in, so an Urdu user
+  /// is not met by an English wall of text.
+  static const Map<String, String> _greetings = {
+    'en': "Hello — I am your ConvoBridge Meeting Assistant. Ask questions "
+        "about the transcript below.",
+    'ur': "السلام علیکم — میں آپ کا کنوو برج میٹنگ اسسٹنٹ ہوں۔ نیچے دی گئی "
+        "ٹرانسکرپٹ کے بارے میں سوال پوچھیں۔",
+    'ar': "مرحبا — أنا مساعد الاجتماعات في ConvoBridge. اسأل عن النص أدناه.",
+    'hi': "नमस्ते — मैं आपका ConvoBridge मीटिंग असिस्टेंट हूँ। नीचे दिए गए "
+        "ट्रांसक्रिप्ट के बारे में प्रश्न पूछें।",
+  };
+
+  static const Map<String, String> _failureText = {
+    'en': "Sorry — chatbot request failed.",
+    'ur': "معاف کیجیے — چیٹ بوٹ کی درخواست ناکام ہو گئی۔",
+    'ar': "عذرًا — فشل طلب المحادثة.",
+    'hi': "क्षमा करें — चैटबॉट अनुरोध विफल रहा।",
+  };
+
+  static const Map<String, String> _hintText = {
+    'en': "Ask about the meeting…",
+    'ur': "میٹنگ کے بارے میں پوچھیں…",
+    'ar': "اسأل عن الاجتماع…",
+    'hi': "बैठक के बारे में पूछें…",
+  };
+
+  late final List<Map<String, String>> messages;
 
   bool loading = false;
   bool _showTranscript = false;
@@ -40,6 +69,13 @@ John: I can review the budget numbers tonight.
 Ahmed: Great. Let's meet again on Monday at 10 AM.
 ''';
 
+  late String _replyLang;
+
+  String get _language => _replyLang;
+
+  String _localized(Map<String, String> table) =>
+      table[_language] ?? table['en']!;
+
   @override
   void initState() {
     super.initState();
@@ -47,6 +83,15 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
         ? widget.transcript!.trim()
         : _sampleTranscript.trim();
     _transcriptController = TextEditingController(text: initial);
+    _replyLang = widget.language ?? 'en';
+    messages = [
+      {
+        "id": "1",
+        "text": _localized(_greetings),
+        "sender": "bot",
+        "lang": _language,
+      }
+    ];
   }
 
   @override
@@ -65,6 +110,7 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
         "id": DateTime.now().toString(),
         "text": userText,
         "sender": "user",
+        "lang": _language,
       });
       controller.clear();
       loading = true;
@@ -75,6 +121,8 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
         question: userText,
         transcript: _transcriptController.text.trim(),
         meetingId: widget.meetingId,
+        language: _language,
+        utterances: widget.utterances,
       );
       if (!mounted) return;
       setState(() {
@@ -82,6 +130,7 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
           "id": DateTime.now().toString(),
           "text": result.answer,
           "sender": "bot",
+          "lang": result.language,
         });
         loading = false;
       });
@@ -90,8 +139,9 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
       setState(() {
         messages.add({
           "id": DateTime.now().toString(),
-          "text": "Sorry — chatbot request failed.\n$e",
+          "text": "${_localized(_failureText)}\n$e",
           "sender": "bot",
+          "lang": _language,
         });
         loading = false;
       });
@@ -107,6 +157,20 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
         title: Text("AI Meeting Assistant"),
         centerTitle: true,
         actions: [
+          PopupMenuButton<String>(
+            tooltip: "Answer language",
+            initialValue: _replyLang,
+            onSelected: (v) => setState(() => _replyLang = v),
+            icon: const Icon(Icons.language),
+            itemBuilder: (ctx) => LangCodes.nameToCode.entries
+                .map(
+                  (e) => PopupMenuItem<String>(
+                    value: e.value,
+                    child: Text(e.key),
+                  ),
+                )
+                .toList(),
+          ),
           IconButton(
             tooltip: "Transcript context",
             onPressed: () => setState(() => _showTranscript = !_showTranscript),
@@ -185,8 +249,9 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
                                 )
                               ],
                       ),
-                      child: Text(
+                      child: LangText(
                         msg["text"]!,
+                        language: msg["lang"] ?? _language,
                         style: TextStyle(
                           color: isUser ? Colors.white : Colors.black,
                         ),
@@ -222,8 +287,11 @@ Ahmed: Great. Let's meet again on Monday at 10 AM.
                     controller: controller,
                     enabled: !loading,
                     onSubmitted: (_) => sendMessage(),
+                    textDirection: LangText.isRtl(_language)
+                        ? TextDirection.rtl
+                        : TextDirection.ltr,
                     decoration: InputDecoration(
-                      hintText: "Ask about the meeting…",
+                      hintText: _localized(_hintText),
                       filled: true,
                       fillColor: Color(0xFFF1F3F6),
                       border: OutlineInputBorder(

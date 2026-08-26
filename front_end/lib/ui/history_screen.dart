@@ -76,6 +76,12 @@ class HistoryScreen extends StatelessWidget {
                     }
                     final lang =
                         '${data['srcLang'] ?? 'en'} → ${data['tgtLang'] ?? 'en'}';
+                    // Re-open the summary/chatbot in the language this session
+                    // was held in, not always English.
+                    final sessionLang =
+                        (data['srcLang'] as String?)?.trim().isNotEmpty == true
+                            ? (data['srcLang'] as String).trim()
+                            : 'en';
 
                     return Container(
                       margin: const EdgeInsets.only(bottom: 14),
@@ -136,6 +142,7 @@ class HistoryScreen extends StatelessWidget {
                                       builder: (_) => SummaryScreen(
                                         title: title,
                                         transcript: transcript,
+                                        language: sessionLang,
                                       ),
                                     ),
                                   );
@@ -149,6 +156,7 @@ class HistoryScreen extends StatelessWidget {
                                     MaterialPageRoute(
                                       builder: (_) => ChatbotScreen(
                                         transcript: transcript,
+                                        language: sessionLang,
                                         meetingId:
                                             data['meetingId'] as String?,
                                       ),

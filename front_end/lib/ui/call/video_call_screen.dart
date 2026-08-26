@@ -596,14 +596,20 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
     await _bus.dispose();
     await _deviceTts.stop();
 
-    // Summarize both sides of the call, not just my own microphone.
+    // Summarize both sides of the call, not just my own microphone. Language
+    // tags travel with each line so the summary can be written in _myLang.
     var transcript = '';
+    var entries = const <TranscriptEntry>[];
     try {
-      transcript = await _room.buildTranscript();
+      entries = await _room.buildTranscriptEntries();
+      transcript = TranscriptEntry.renderTranscript(entries);
     } catch (e) {
       debugPrint('VideoCallScreen transcript failed: $e');
     }
-    if (transcript.trim().isEmpty) transcript = _aiSession.fullTranscript;
+    if (transcript.trim().isEmpty) {
+      transcript = _aiSession.fullTranscript;
+      entries = const [];
+    }
 
     await _callsRepo.endCall(widget.callId);
     await _engine?.leaveChannel();
@@ -615,6 +621,8 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
             title: 'Video call summary',
             duration: _duration,
             transcript: transcript,
+            language: _myLang,
+            utterances: entries.isEmpty ? null : entries,
           ),
         ),
       );

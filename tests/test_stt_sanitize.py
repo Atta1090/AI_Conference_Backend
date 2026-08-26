@@ -44,6 +44,13 @@ def test_rejects_english_hallucination_when_urdu_expected():
     assert sanitize_stt_text(junk, language="ur") == ""
 
 
+def test_keeps_short_english_when_urdu_expected():
+    # Whisper-base often emits English for Urdu audio; dropping it made
+    # both-sides-Urdu meetings go silent. Keep it so it can be translated.
+    text = "The communication system is very important."
+    assert sanitize_stt_text(text, language="ur") == text
+
+
 def test_keeps_urdu_when_language_urdu():
     text = "مواصلات کا نظام بہت اہم ہے"
     assert sanitize_stt_text(text, language="ur") == text

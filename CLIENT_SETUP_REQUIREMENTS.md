@@ -518,8 +518,9 @@ flutter run -d <PHONE_B_ID> --dart-define=AI_SERVER_BASE_URL=http://<PC_IP>:8000
 5. **Phone B**: Join with code → pick different language (e.g. **English**).  
 6. Phone A speaks → after a short pause, Phone B shows English caption + voice.  
 7. Phone B replies → Phone A hears Urdu.  
-8. End meeting → open **Summary**.  
-9. Open **Ask chatbot** and ask a question about the transcript.
+8. End meeting → open **Summary**. Phone A's summary is in **Urdu**, Phone B's
+   in **English** — same meeting, each in that user's own language.
+9. Open **Ask chatbot**, ask in your own language, and get an answer in it.
 
 ### Also test
 
@@ -527,7 +528,30 @@ flutter run -d <PHONE_B_ID> --dart-define=AI_SERVER_BASE_URL=http://<PC_IP>:8000
 |--------|----------------|
 | AI Translator | English paragraph → full Urdu (sentence-by-sentence Opus-MT) |
 | Language chip mid-call | Only that phone’s captions/voice language changes |
-| History | Past sessions listed |
+| History | Past sessions listed; Summary/Ask AI reopen in the session language |
+| Summary (Urdu/Arabic) | Text is right-aligned, and speaker names are **not** translated |
+| Both sides Urdu | Captions stay Urdu (no translation hop), summary is Urdu |
+
+### How non-English summary and chatbot work
+
+Gemma 3 1B only reasons reliably in English, and a meeting transcript is mixed
+(each caption is stored in the language its speaker used). So the backend:
+
+1. translates every transcript line into English with Opus-MT,
+2. runs the summary / chatbot in English,
+3. translates the result into the language that user picked.
+
+Speaker names are deliberately excluded from step 3 — Opus-MT rewrites unknown
+proper nouns (it turned "Bilal" into a different name), which would misattribute
+action items. This means **the Urdu/Arabic/Hindi pairs must be installed** or
+these screens silently fall back to English. Check with:
+
+```
+GET http://<PC_IP>:8000/languages/readiness
+```
+
+`all_ready: true` means every pair is present; otherwise run
+`python download_opus_models.py`.
 
 ---
 
@@ -538,8 +562,8 @@ flutter run -d <PHONE_B_ID> --dart-define=AI_SERVER_BASE_URL=http://<PC_IP>:8000
 | 1 | Preferred language per user | translate + STT | language picker |
 | 2 | Live captions in selected language | STT + translate | caption overlay |
 | 3 | Translated spoken voice | translate | `flutter_tts` |
-| 4 | Meeting summarization | Gemma + LoRA | summary screen |
-| 5 | Chatbot on transcript | Gemma + LoRA | chatbot UI |
+| 4 | Meeting summarization | Gemma + LoRA (English pivot) | summary screen |
+| 5 | Chatbot on transcript | Gemma + LoRA (English pivot) | chatbot UI |
 | 6 | Two-phone cross-language meeting | all of above + Firestore | create/join meeting |
 | 7 | Standalone text translator | `/translate` | AI Translator screen |
 
@@ -555,6 +579,8 @@ flutter run -d <PHONE_B_ID> --dart-define=AI_SERVER_BASE_URL=http://<PC_IP>:8000
 | Caption OK, no voice | TTS voice not installed | Install language voice pack |
 | Translation is one short wrong sentence | Old backend without sentence split | Restart backend with latest `translation.py` |
 | Summary/chatbot fail / HF error | No HF login / license | `huggingface-cli login`, accept Gemma license |
+| Summary/chatbot answer in English when Urdu was picked | Opus-MT pair for that language missing | `GET /languages/readiness`, then `python download_opus_models.py` |
+| Summary text reads oddly in Urdu but names are right | Expected: 1B model + small MT models | Speak in full sentences; longer transcripts summarize better |
 | Port 8000 already in use | Another Python process | Stop old process or change port |
 | Hot reload didn’t change server URL | `fromEnvironment` is compile-time | Full `flutter run` restart |
 | Using `.\.venv\...` | Wrong folder name | Use `.\venv\Scripts\Activate.ps1` |

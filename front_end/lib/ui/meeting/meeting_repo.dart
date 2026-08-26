@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../services/room_utterances.dart';
+import '../../services/transcript_entry.dart';
 
 /// Firestore mein ek meeting document ka model
 class MeetingDoc {
@@ -168,6 +169,11 @@ class MeetingRepo {
   /// Summarization aur chatbot isi transcript par kaam karte hain.
   Future<String> buildTranscript(String meetingId) =>
       bus(meetingId).buildTranscript();
+
+  /// Wahi transcript, magar har line ke saath uski language bhi — mixed
+  /// language meeting ko summarize karne se pehle normalise karne ke liye.
+  Future<List<TranscriptEntry>> buildTranscriptEntries(String meetingId) =>
+      bus(meetingId).buildTranscriptEntries();
 
   // ── Status update ───────────────────────────────────────────────────
 

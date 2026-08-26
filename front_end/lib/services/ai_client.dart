@@ -4,6 +4,9 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import '../app_config.dart';
+import 'transcript_entry.dart';
+
+export 'transcript_entry.dart';
 
 /// ISO language codes supported by the FastAPI backend (`app/core/languages.py`).
 /// Pakistan-focused set: English, Urdu (must), Arabic, Hindi.
@@ -68,6 +71,9 @@ class AiSummarizeResult {
   final String summary;
   final List<String> keyPoints;
   final List<String> actionItems;
+
+  /// Language the fields above are written in (ISO-639-1).
+  final String language;
   final String raw;
 
   const AiSummarizeResult({
@@ -76,6 +82,7 @@ class AiSummarizeResult {
     required this.keyPoints,
     required this.actionItems,
     required this.raw,
+    this.language = 'en',
   });
 }
 
@@ -83,12 +90,16 @@ class AiChatResult {
   final String question;
   final String answer;
   final String? meetingId;
+
+  /// Language the answer is written in (ISO-639-1).
+  final String language;
   final bool usedSampleTranscript;
 
   const AiChatResult({
     required this.question,
     required this.answer,
     this.meetingId,
+    this.language = 'en',
     this.usedSampleTranscript = false,
   });
 }
@@ -246,15 +257,22 @@ class AiClient {
   }
 
   /// Meeting summarization via `POST /summarize`.
+  ///
+  /// [language] is the language the summary must be written in (the language
+  /// the user picked in the meeting). [utterances] carries each line's spoken
+  /// language so the backend can normalise a mixed-language transcript.
   Future<AiSummarizeResult> summarize({
     required String transcript,
     String? meetingId,
     String? language,
+    List<TranscriptEntry>? utterances,
   }) async {
     final payload = <String, dynamic>{
       'transcript': transcript,
       if (meetingId != null) 'meeting_id': meetingId,
       if (language != null) 'language': LangCodes.toIso(language),
+      if (utterances != null && utterances.isNotEmpty)
+        'utterances': utterances.map((e) => e.toJson()).toList(),
     };
     final res = await _http.post(
       _uri('/summarize'),
@@ -272,21 +290,30 @@ class AiClient {
       actionItems: (json['action_items'] as List<dynamic>? ?? const [])
           .map((e) => e.toString())
           .toList(),
+      language: (json['language'] as String?) ?? 'en',
       raw: (json['raw'] as String?) ?? '',
     );
   }
 
   /// Meeting Q&A chatbot via `POST /chatbot/ask`.
+  ///
+  /// [language] forces the answer language; when omitted the backend answers
+  /// in whatever language the question was typed in.
   Future<AiChatResult> askChatbot({
     required String question,
     String? transcript,
     String? meetingId,
+    String? language,
+    List<TranscriptEntry>? utterances,
   }) async {
     final payload = <String, dynamic>{
       'question': question,
       if (transcript != null && transcript.trim().isNotEmpty)
         'transcript': transcript,
       if (meetingId != null) 'meeting_id': meetingId,
+      if (language != null) 'language': LangCodes.toIso(language),
+      if (utterances != null && utterances.isNotEmpty)
+        'utterances': utterances.map((e) => e.toJson()).toList(),
     };
     final res = await _http.post(
       _uri('/chatbot/ask'),
@@ -299,6 +326,7 @@ class AiClient {
       question: (json['question'] as String?) ?? question,
       answer: (json['answer'] as String?) ?? '',
       meetingId: json['meeting_id'] as String?,
+      language: (json['language'] as String?) ?? 'en',
       usedSampleTranscript: json['used_sample_transcript'] as bool? ?? false,
     );
   }

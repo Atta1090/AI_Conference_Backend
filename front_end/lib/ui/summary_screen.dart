@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/ai_client.dart';
 import 'chatbot_screen.dart';
+import 'widgets/lang_text.dart';
 
 class SummaryScreen extends StatefulWidget {
   final String? title;
@@ -9,12 +10,22 @@ class SummaryScreen extends StatefulWidget {
   final List<String>? participants;
   final String? transcript;
 
+  /// Language the summary should be written in — the language this user picked
+  /// in the meeting. Without it the backend can only answer in English.
+  final String? language;
+
+  /// Per-line transcript with each line's spoken language, so a mixed
+  /// English/Urdu meeting can be normalised before it is summarized.
+  final List<TranscriptEntry>? utterances;
+
   const SummaryScreen({
     super.key,
     this.title,
     this.duration,
     this.participants,
     this.transcript,
+    this.language,
+    this.utterances,
   });
 
   @override
@@ -31,11 +42,21 @@ class _SummaryScreenState extends State<SummaryScreen> {
   String _overview = '';
   List<String> _keyPoints = const [];
   List<String> _actionItems = const [];
+  String _resultLang = 'en';
+  late String _outputLang;
+
+  /// Only send structured utterances while the transcript box still matches
+  /// them; once the user edits it by hand the plain text is the truth.
+  bool _transcriptEdited = false;
+
+  String get _language => _outputLang;
 
   @override
   void initState() {
     super.initState();
     _transcriptController = TextEditingController(text: widget.transcript ?? '');
+    _outputLang = widget.language ?? 'en';
+    _resultLang = _outputLang;
     if ((_transcriptController.text).trim().length >= 20) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _runSummarize());
     }
@@ -65,12 +86,17 @@ class _SummaryScreenState extends State<SummaryScreen> {
     });
 
     try {
-      final result = await _ai.summarize(transcript: text);
+      final result = await _ai.summarize(
+        transcript: text,
+        language: _language,
+        utterances: _transcriptEdited ? null : widget.utterances,
+      );
       if (!mounted) return;
       setState(() {
         _overview = result.summary;
         _keyPoints = result.keyPoints;
         _actionItems = result.actionItems;
+        _resultLang = result.language;
         _loading = false;
         _hasRun = true;
       });
@@ -198,6 +224,15 @@ class _SummaryScreenState extends State<SummaryScreen> {
                         TextField(
                           controller: _transcriptController,
                           maxLines: 6,
+                          textDirection: LangText.isRtl(
+                            LangText.detectLanguage(
+                              _transcriptController.text,
+                              defaultLang: _outputLang,
+                            ),
+                            _transcriptController.text,
+                          )
+                              ? TextDirection.rtl
+                              : TextDirection.ltr,
                           decoration: InputDecoration(
                             hintText:
                                 "Paste meeting transcript (min 20 characters)…",
@@ -208,7 +243,38 @@ class _SummaryScreenState extends State<SummaryScreen> {
                               borderSide: BorderSide.none,
                             ),
                           ),
-                          onChanged: (_) => setState(() {}),
+                          onChanged: (_) => setState(() {
+                            _transcriptEdited = true;
+                          }),
+                        ),
+                        SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          value: LangCodes.nameToCode.values.contains(_outputLang)
+                              ? _outputLang
+                              : 'en',
+                          decoration: InputDecoration(
+                            labelText: 'Write summary in',
+                            filled: true,
+                            fillColor: Color(0xFFF1F3F6),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                          items: LangCodes.nameToCode.entries
+                              .map(
+                                (e) => DropdownMenuItem(
+                                  value: e.value,
+                                  child: Text(e.key),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: _loading
+                              ? null
+                              : (v) {
+                                  if (v == null) return;
+                                  setState(() => _outputLang = v);
+                                },
                         ),
                         SizedBox(height: 12),
                         SizedBox(
@@ -246,7 +312,7 @@ class _SummaryScreenState extends State<SummaryScreen> {
                     _section(
                       icon: Icons.text_snippet,
                       title: "Overview",
-                      child: Text(_overview),
+                      child: LangText(_overview, language: _resultLang),
                     ),
 
                   // A model can return text we cannot place into any section.
@@ -283,7 +349,10 @@ class _SummaryScreenState extends State<SummaryScreen> {
                                       Icon(Icons.check_circle,
                                           color: Color(0xFF39A935)),
                                       SizedBox(width: 6),
-                                      Expanded(child: Text(e)),
+                                      Expanded(
+                                        child: LangText(e,
+                                            language: _resultLang),
+                                      ),
                                     ],
                                   ),
                                 ))
@@ -309,7 +378,10 @@ class _SummaryScreenState extends State<SummaryScreen> {
                                       Icon(Icons.check_circle_outline,
                                           color: Color(0xFF39A935)),
                                       SizedBox(width: 8),
-                                      Expanded(child: Text(e)),
+                                      Expanded(
+                                        child: LangText(e,
+                                            language: _resultLang),
+                                      ),
                                     ],
                                   ),
                                 ))
@@ -327,7 +399,28 @@ class _SummaryScreenState extends State<SummaryScreen> {
                           color: Color(0xFFF1F3F6),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Text(transcriptText),
+                        child: LangText(
+                        transcriptText,
+                        language: LangText.detectLanguage(
+                          transcriptText,
+                          defaultLang: _outputLang,
+                        ),
+                      ),
+                      ),
+                    ),
+
+                  if (_hasRun && _error == null && _overview.isNotEmpty)
+                    _section(
+                      icon: Icons.translate,
+                      title: "Summary language",
+                      child: Text(
+                        _resultLang == _language
+                            ? "Written in ${_languageName(_resultLang)}."
+                            : "Requested ${_languageName(_language)}; the "
+                                "server replied in ${_languageName(_resultLang)}. "
+                                "Check that the Opus-MT pair for "
+                                "${_languageName(_language)} is installed.",
+                        style: TextStyle(color: Colors.grey.shade700),
                       ),
                     ),
 
@@ -344,6 +437,10 @@ class _SummaryScreenState extends State<SummaryScreen> {
                               MaterialPageRoute(
                                 builder: (_) => ChatbotScreen(
                                   transcript: transcriptText,
+                                  language: _language,
+                                  utterances: _transcriptEdited
+                                      ? null
+                                      : widget.utterances,
                                 ),
                               ),
                             );
@@ -394,6 +491,13 @@ class _SummaryScreenState extends State<SummaryScreen> {
         ],
       ),
     );
+  }
+
+  String _languageName(String code) {
+    for (final entry in LangCodes.nameToCode.entries) {
+      if (entry.value == code) return entry.key;
+    }
+    return code;
   }
 
   Widget _chip(IconData icon, String text) {

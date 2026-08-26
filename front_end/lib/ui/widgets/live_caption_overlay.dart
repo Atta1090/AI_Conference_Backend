@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../services/ai_client.dart';
+import 'lang_text.dart';
 
 /// Live caption strip for video/meeting screens.
 ///
@@ -86,12 +87,13 @@ class LiveCaptionOverlay extends StatelessWidget {
             const SizedBox(height: 10),
 
             // What the other side said, in my language — the important line.
-            Text(
+            LangText(
               incomingText.isEmpty
                   ? 'Waiting for someone to speak…'
                   : (incomingSpeaker.isEmpty
                       ? incomingText
                       : '$incomingSpeaker: $incomingText'),
+              language: incomingText.isEmpty ? 'en' : myLang,
               style: TextStyle(
                 color: incomingText.isEmpty ? Colors.white38 : Colors.white,
                 fontSize: 15,
@@ -103,8 +105,9 @@ class LiveCaptionOverlay extends StatelessWidget {
             const SizedBox(height: 6),
 
             // What I said, for confidence that the mic is being heard.
-            Text(
+            LangText(
               mySpeech.isEmpty ? 'You: …' : 'You: $mySpeech',
+              language: myLang,
               style: const TextStyle(color: Colors.white54, fontSize: 12),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,

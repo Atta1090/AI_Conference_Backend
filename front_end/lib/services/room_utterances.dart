@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'transcript_entry.dart';
+
 /// One participant's recognized speech, carried as **text** (not audio).
 ///
 /// The speaker publishes in their own language; every receiver translates it
@@ -117,15 +119,26 @@ class RoomUtterances {
 
   /// The whole conversation as `Name: text` lines — this is what gets fed to
   /// `/summarize` and to the chatbot.
-  Future<String> buildTranscript() async {
+  Future<String> buildTranscript() async =>
+      TranscriptEntry.renderTranscript(await buildTranscriptEntries());
+
+  /// The conversation with each line's spoken language preserved, so the
+  /// backend can translate a mixed-language meeting before summarizing it.
+  Future<List<TranscriptEntry>> buildTranscriptEntries() async {
     final q = await _utterances.orderBy('createdAt').get();
-    final lines = <String>[];
+    final entries = <TranscriptEntry>[];
     for (final d in q.docs) {
       final u = Utterance.fromJson(d.id, d.data());
       final text = u.text.trim();
       if (text.isEmpty) continue;
-      lines.add('${u.speakerName}: $text');
+      entries.add(
+        TranscriptEntry(
+          speaker: u.speakerName,
+          text: text,
+          lang: u.lang,
+        ),
+      );
     }
-    return lines.join('\n');
+    return entries;
   }
 }

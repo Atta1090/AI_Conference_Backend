@@ -9,6 +9,7 @@ import 'ai_client.dart';
 import 'device_tts.dart';
 import 'room_utterances.dart';
 import 'stage_log.dart';
+import '../ui/widgets/lang_text.dart';
 
 /// The receiving half of the meeting pipeline.
 ///
@@ -133,19 +134,25 @@ class MeetingTranslationBus {
         final original = u.text.trim();
 
         String translated = original;
+        final tagged = u.lang.trim().isEmpty ? 'en' : u.lang.trim();
+        // Trust the script on the page, not only the picker tag. Whisper-base
+        // often emits English while the speaker is tagged Urdu; skipping
+        // translation then leaves the other Urdu phone reading English.
+        final source = LangText.detectLanguage(original, defaultLang: tagged);
         StageLog.step('BUS', 'Remote utterance received', {
           'from': u.speakerName,
-          'lang': u.lang,
+          'tagged': tagged,
+          'detected': source,
         });
-        if (u.lang != _myLang) {
+        if (source != _myLang) {
           try {
             StageLog.step('TRANSLATE', 'POST /translate', {
-              'from': u.lang,
+              'from': source,
               'to': _myLang,
             });
             final res = await _ai.translate(
               text: original,
-              sourceLanguage: u.lang,
+              sourceLanguage: source,
               targetLanguage: _myLang,
             );
             final out = res.translatedText.trim();

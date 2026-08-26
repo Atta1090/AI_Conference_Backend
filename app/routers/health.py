@@ -23,3 +23,33 @@ def health() -> HealthResponse:
 def languages():
     """List languages supported across the pipeline."""
     return {"languages": supported_catalogue()}
+
+
+@router.get("/languages/readiness")
+def languages_readiness():
+    """Report which translation pairs are actually installed on this machine.
+
+    A missing Urdu pair is the usual reason non-English meetings fall back to
+    English captions and summaries, and it is otherwise invisible until a demo
+    is already running.
+    """
+    from app.services.translation import installed_pairs
+
+    pairs = installed_pairs()
+    missing = sorted(name for name, ready in pairs.items() if not ready)
+    stage(
+        "HEALTH",
+        "Translation readiness checked",
+        ready=len(pairs) - len(missing),
+        missing=len(missing),
+    )
+    return {
+        "pairs": pairs,
+        "missing": missing,
+        "all_ready": not missing,
+        "hint": (
+            "Run: python download_opus_models.py"
+            if missing
+            else "All Opus-MT pairs installed."
+        ),
+    }

@@ -41,9 +41,14 @@ class Settings:
         self.upload_dir: Path = Path(os.getenv("UPLOAD_DIR", self.base_dir / "uploads"))
 
         # ---- Speech-to-Text (faster-whisper) ----
-        self.stt_model_path: str = os.getenv(
-            "STT_MODEL_PATH", str(self.base_dir / "models" / "faster-whisper-base")
+        # Prefer faster-whisper-small when present (better Urdu/Arabic/Hindi);
+        # fall back to base so machines that only have the original model still run.
+        _stt_small = self.base_dir / "models" / "faster-whisper-small" / "model.bin"
+        _stt_base = self.base_dir / "models" / "faster-whisper-base"
+        _stt_default = (
+            str(_stt_small.parent) if _stt_small.exists() else str(_stt_base)
         )
+        self.stt_model_path: str = os.getenv("STT_MODEL_PATH", _stt_default)
         # int8 keeps memory/latency low on CPU; use "float16" on GPU.
         self.stt_compute_type: str = os.getenv(
             "STT_COMPUTE_TYPE", "int8" if self.device == "cpu" else "float16"

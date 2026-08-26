@@ -99,8 +99,8 @@ def _generate(model, tokenizer, inputs, *, sample: bool) -> str:
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
 
 
-def summarize_transcript(transcript: str) -> dict:
-    """Generate structured meeting summary from transcript text.
+def _summarize_english(transcript: str) -> dict:
+    """Run the Gemma summary on an English transcript.
 
     Prefers Gemma + LoRA. On an 8 GB laptop the model often cannot load (or
     returns empty text after an immediate end-of-turn); in that case we fall
@@ -143,4 +143,80 @@ def summarize_transcript(transcript: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"[summarization] model failed ({exc}); using extractive fallback")
 
-    return extractive_summary(transcript)
+    return extractive_summary(transcript, language="en")
+
+
+def summarize_transcript(
+    transcript: str,
+    language: str | None = None,
+    utterances: list[dict] | None = None,
+) -> dict:
+    """Summarize a (possibly multilingual) transcript in ``language``.
+
+    Every line is first normalised to English so Gemma sees one language, then
+    the finished summary, key points and action items are translated into the
+    language the user picked in the meeting.
+    """
+    from app.services import multilingual
+    from app.services.extractive_summary import extractive_summary
+
+    english_transcript, entries = multilingual.english_transcript(
+        transcript,
+        utterances=utterances,
+        default_language=multilingual.normalize_code(language),
+    )
+    target = multilingual.normalize_code(
+        language,
+        default=multilingual.dominant_language(entries) if entries else "en",
+    )
+
+    source = english_transcript.strip() or (transcript or "").strip()
+    if len(source) < 20:
+        # Too little usable text to summarize; keep the original wording.
+        result = extractive_summary(transcript or "", language=target)
+        result["language"] = target
+        return result
+
+    result = _summarize_english(source)
+
+    if target == "en":
+        result["language"] = "en"
+        return result
+
+    # Speaker names are held out of the translation so an action item is never
+    # attributed to the wrong person (see multilingual.localize_many).
+    names = {entry["speaker"] for entry in entries}
+    summary = multilingual.localize(result.get("summary", ""), target, names)
+    key_points = multilingual.localize_many(
+        result.get("key_points", []), target, names
+    )
+    action_items = multilingual.localize_many(
+        result.get("action_items", []), target, names
+    )
+
+    localized_ok = multilingual.mostly_in_language(summary, target) or any(
+        multilingual.mostly_in_language(p, target) for p in key_points
+    )
+    if not localized_ok:
+        # Opus-MT copied English or the pair is missing. Prefer a readable
+        # extractive summary in the user's script over an English Gemma dump.
+        print(f"[summarization] en->{target} localization failed; extractive fallback")
+        original = (
+            multilingual.render_transcript(entries)
+            if entries
+            else (transcript or "")
+        )
+        fallback = extractive_summary(original, language=target)
+        fallback["language"] = target
+        return fallback
+
+    print(f"[summarization] localized summary en->{target}")
+
+    return {
+        "summary": summary,
+        "key_points": key_points,
+        "action_items": action_items,
+        "language": target,
+        # Keep the English model output for debugging; the UI shows the fields.
+        "raw": result.get("raw", ""),
+    }

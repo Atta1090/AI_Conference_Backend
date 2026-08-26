@@ -23,6 +23,9 @@ _PUNCT_RE = re.compile(r"([!?.,])\1+")
 # Opus-MT is trained on sentence pairs; whole paragraphs often collapse
 # into a short, wrong line. Split on end punctuation (incl. Urdu/Arabic).
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?۔؟！])\s+")
+# Meeting transcripts arrive as dozens of short lines; batching them keeps
+# summary/chatbot latency workable on a CPU-only laptop.
+_MAX_BATCH = 16
 
 
 def _cleanup_text(text: str) -> str:
@@ -55,6 +58,19 @@ def _resolve_model_source(model_id: str) -> str:
             if path.stat().st_size > 50_000_000:
                 return str(path.parent)
     return model_id
+
+
+def _pair_is_installed(model_id: str) -> bool:
+    """True when weights for a pair exist locally (no network needed)."""
+    return _resolve_model_source(model_id) != model_id
+
+
+def installed_pairs() -> dict[str, bool]:
+    """Map ``"en->ur"`` to whether that Opus-MT pair is present on disk."""
+    return {
+        f"{src}->{tgt}": _pair_is_installed(model_id)
+        for (src, tgt), model_id in languages.OPUS_PAIRS.items()
+    }
 
 
 def _load_pair(model_id: str):
@@ -99,7 +115,11 @@ def _load_pair(model_id: str):
         return tokenizer, model
 
 
-def _translate_direct(text: str, source: str, target: str) -> str:
+def _translate_direct_batch(texts: list[str], source: str, target: str) -> list[str]:
+    """Translate many strings, batching Marian forward passes."""
+    if not texts:
+        return []
+
     model_id = languages.opus_model_id(source, target)
     if model_id is None:
         raise ValueError(f"No direct Opus-MT model for {source}→{target}")
@@ -107,46 +127,112 @@ def _translate_direct(text: str, source: str, target: str) -> str:
     import torch
 
     tokenizer, model = _load_pair(model_id)
-    encoded = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=settings.translation_max_length,
-        padding=True,
-    )
     # Quantized CPU models stay on CPU; cuda models use settings.device.
     device = next(model.parameters()).device
-    encoded = {k: v.to(device) for k, v in encoded.items()}
 
-    with torch.no_grad():
-        generated = model.generate(
-            **encoded,
+    out: list[str] = []
+    for start in range(0, len(texts), _MAX_BATCH):
+        chunk = texts[start : start + _MAX_BATCH]
+        encoded = tokenizer(
+            chunk,
+            return_tensors="pt",
+            truncation=True,
             max_length=settings.translation_max_length,
-            num_beams=settings.translation_num_beams,
-            early_stopping=True,
+            padding=True,
         )
+        encoded = {k: v.to(device) for k, v in encoded.items()}
 
-    return tokenizer.batch_decode(generated, skip_special_tokens=True)[0].strip()
+        with torch.no_grad():
+            generated = model.generate(
+                **encoded,
+                max_length=settings.translation_max_length,
+                num_beams=settings.translation_num_beams,
+                early_stopping=True,
+            )
+
+        out.extend(
+            line.strip()
+            for line in tokenizer.batch_decode(generated, skip_special_tokens=True)
+        )
+    return out
+
+
+def _translate_direct(text: str, source: str, target: str) -> str:
+    return _translate_direct_batch([text], source, target)[0]
 
 
 def translate(text: str, source_language: str, target_language: str) -> str:
     """Translate ``text`` between supported ISO-639-1 language codes."""
-    text = _cleanup_text(text)
-    if not text:
-        return ""
+    return translate_batch([text], source_language, target_language)[0]
+
+
+def translate_batch(
+    texts: list[str],
+    source_language: str,
+    target_language: str,
+) -> list[str]:
+    """Translate many texts at once, preserving input order.
+
+    Every text is still split into sentences (Opus-MT collapses paragraphs),
+    but all sentences from all texts share one padded batch per hop, which is
+    far faster than translating a meeting transcript line by line.
+    """
+    cleaned = [_cleanup_text(t) for t in texts]
     if source_language == target_language:
-        return text
+        return cleaned
+    if not any(cleaned):
+        return cleaned
 
     hops = languages.translation_path(source_language, target_language)
-    sentences = _split_sentences(text)
-    if not sentences:
-        sentences = [text]
 
-    translated_parts: list[str] = []
-    for sentence in sentences:
-        current = sentence
-        for src, tgt in hops:
-            current = _cleanup_text(_translate_direct(current, src, tgt))
-        if current:
-            translated_parts.append(current)
-    return " ".join(translated_parts)
+    pieces: list[str] = []
+    owners: list[int] = []
+    for index, text in enumerate(cleaned):
+        if not text:
+            continue
+        for sentence in _split_sentences(text) or [text]:
+            pieces.append(sentence)
+            owners.append(index)
+
+    for src, tgt in hops:
+        pieces = [_cleanup_text(p) for p in _translate_direct_batch(pieces, src, tgt)]
+
+    rebuilt: list[list[str]] = [[] for _ in cleaned]
+    for index, piece in zip(owners, pieces):
+        if piece:
+            rebuilt[index].append(piece)
+    out = [" ".join(parts) for parts in rebuilt]
+    return _retry_if_script_mismatch(cleaned, out, source_language, target_language)
+
+
+def _retry_if_script_mismatch(
+    originals: list[str],
+    translated: list[str],
+    source: str,
+    target: str,
+) -> list[str]:
+    """Re-run failed lines one-by-one when the batch copied the source script."""
+    if source == target:
+        return translated
+    from app.services.multilingual import mostly_in_language
+
+    hops = languages.translation_path(source, target)
+    fixed = list(translated)
+    for i, (original, current) in enumerate(zip(originals, translated)):
+        if not original:
+            continue
+        if mostly_in_language(current, target):
+            continue
+        retry = original
+        if not retry.endswith((".", "?", "!", "۔", "؟", "।")):
+            retry = retry + "."
+        try:
+            for src, tgt in hops:
+                retry = _cleanup_text(_translate_direct(retry, src, tgt))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[translation] retry {source}->{target} failed ({exc})")
+            continue
+        if mostly_in_language(retry, target):
+            fixed[i] = retry
+            print(f"[translation] retried line {i} {source}->{target}")
+    return fixed

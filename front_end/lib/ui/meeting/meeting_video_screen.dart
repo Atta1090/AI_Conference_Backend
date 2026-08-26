@@ -607,15 +607,20 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
     await _deviceTts.stop();
 
     // The summary has to cover the whole meeting, so read every participant's
-    // utterances back rather than only what this microphone heard.
+    // utterances back rather than only what this microphone heard. Each line
+    // keeps its spoken language so a mixed English/Urdu meeting can still be
+    // summarized in the language this user picked.
     var transcript = '';
+    var entries = const <TranscriptEntry>[];
     try {
-      transcript = await _repo.buildTranscript(widget.meetingId);
+      entries = await _repo.buildTranscriptEntries(widget.meetingId);
+      transcript = TranscriptEntry.renderTranscript(entries);
     } catch (e) {
       debugPrint('MeetingVideoScreen transcript failed: $e');
     }
     if (transcript.trim().isEmpty) {
       transcript = _aiSession.fullTranscript;
+      entries = const [];
     }
 
     // Host meeting end karta hai, participant sirf leave karta hai
@@ -632,6 +637,8 @@ class _MeetingVideoScreenState extends State<MeetingVideoScreen> {
             title: 'Meeting summary',
             duration: _duration,
             transcript: transcript,
+            language: _myLang,
+            utterances: entries.isEmpty ? null : entries,
           ),
         ),
       );
